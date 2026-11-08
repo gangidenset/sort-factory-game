@@ -3,6 +3,8 @@
 ベルトコンベアを流れる荷物を、正しいトラック（配送ドック）へ仕分ける縦画面2Dカジュアルパズル。
 Flutter + Flame製、Android / iOS対応、オフラインで遊べる基本無料ゲーム（広告＋買い切り課金）。
 
+<img src="docs/screenshot_gameplay.png" width="260" alt="gameplay">
+
 > ステータス: **MVP実装済み（Phase 1〜3完了、Phase 4はテストID構成まで）**。実機テスト・ストア設定は未実施。
 
 ---
