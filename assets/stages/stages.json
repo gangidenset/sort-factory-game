@@ -1,0 +1,745 @@
+{
+ "version": 1,
+ "stages": [
+  {
+   "id": 1,
+   "name": "はじめての仕分け",
+   "difficulty": "easy",
+   "seed": 1037,
+   "colors": [
+    0,
+    1
+   ],
+   "docks": 2,
+   "targetDeliveries": 8,
+   "spawnInterval": 2.6,
+   "offRate": 0,
+   "maxMistakes": 3,
+   "tutorial": "basic",
+   "starScores": [
+    830,
+    1240
+   ]
+  },
+  {
+   "id": 2,
+   "name": "トラックを満タンに",
+   "difficulty": "easy",
+   "seed": 1074,
+   "colors": [
+    0,
+    1
+   ],
+   "docks": 2,
+   "targetDeliveries": 10,
+   "spawnInterval": 2.4,
+   "offRate": 0,
+   "tutorial": "truck",
+   "starScores": [
+    1140,
+    1710
+   ]
+  },
+  {
+   "id": 3,
+   "name": "3つのドック",
+   "difficulty": "easy",
+   "seed": 1111,
+   "colors": [
+    0,
+    1,
+    2
+   ],
+   "docks": 3,
+   "targetDeliveries": 14,
+   "spawnInterval": 2.3,
+   "offRate": 0.05,
+   "starScores": [
+    1750,
+    2620
+   ]
+  },
+  {
+   "id": 4,
+   "name": "一時保管エリア",
+   "difficulty": "easy",
+   "seed": 1148,
+   "colors": [
+    0,
+    1,
+    2
+   ],
+   "docks": 3,
+   "targetDeliveries": 14,
+   "spawnInterval": 2.3,
+   "offRate": 0.2,
+   "bufferSlots": 1,
+   "tutorial": "buffer",
+   "starScores": [
+    1750,
+    2620
+   ]
+  },
+  {
+   "id": 5,
+   "name": "流れに乗る",
+   "difficulty": "easy",
+   "seed": 1185,
+   "colors": [
+    0,
+    1,
+    2
+   ],
+   "docks": 3,
+   "targetDeliveries": 17,
+   "spawnInterval": 2.1,
+   "offRate": 0.15,
+   "bufferSlots": 1,
+   "starScores": [
+    2290,
+    3430
+   ]
+  },
+  {
+   "id": 6,
+   "name": "4色の荷物",
+   "difficulty": "easy",
+   "seed": 1222,
+   "colors": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "docks": 3,
+   "targetDeliveries": 17,
+   "spawnInterval": 2.1,
+   "offRate": 0.2,
+   "bufferSlots": 1,
+   "starScores": [
+    2290,
+    3430
+   ]
+  },
+  {
+   "id": 7,
+   "name": "お急ぎ便",
+   "difficulty": "easy",
+   "seed": 1259,
+   "colors": [
+    0,
+    1,
+    2
+   ],
+   "docks": 3,
+   "targetDeliveries": 17,
+   "spawnInterval": 2.1,
+   "offRate": 0.1,
+   "bufferSlots": 1,
+   "timedRate": 0.2,
+   "timedSeconds": 12,
+   "tutorial": "timed",
+   "starScores": [
+    2390,
+    3580
+   ]
+  },
+  {
+   "id": 8,
+   "name": "連続仕分け",
+   "difficulty": "easy",
+   "seed": 1296,
+   "colors": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "docks": 3,
+   "targetDeliveries": 19,
+   "spawnInterval": 1.9,
+   "offRate": 0.15,
+   "bufferSlots": 1,
+   "tutorial": "combo",
+   "starScores": [
+    2710,
+    4060
+   ]
+  },
+  {
+   "id": 9,
+   "name": "返品シュート",
+   "difficulty": "easy",
+   "seed": 1333,
+   "colors": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "docks": 3,
+   "targetDeliveries": 19,
+   "spawnInterval": 1.9,
+   "offRate": 0.3,
+   "bufferSlots": 1,
+   "tutorial": "chute",
+   "starScores": [
+    2710,
+    4060
+   ]
+  },
+  {
+   "id": 10,
+   "name": "新人卒業試験",
+   "difficulty": "easy",
+   "seed": 1370,
+   "colors": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "docks": 3,
+   "targetDeliveries": 22,
+   "spawnInterval": 1.8,
+   "offRate": 0.2,
+   "bufferSlots": 1,
+   "timedRate": 0.15,
+   "timedSeconds": 11,
+   "starScores": [
+    3430,
+    5140
+   ]
+  },
+  {
+   "id": 11,
+   "name": "4番ドック開放",
+   "difficulty": "normal",
+   "seed": 1407,
+   "colors": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "docks": 4,
+   "dockCapacity": 4,
+   "targetDeliveries": 22,
+   "spawnInterval": 1.9,
+   "offRate": 0.2,
+   "bufferSlots": 2,
+   "tutorial": "buffer2",
+   "starScores": [
+    3150,
+    4720
+   ]
+  },
+  {
+   "id": 12,
+   "name": "色変わり荷物",
+   "difficulty": "normal",
+   "seed": 1444,
+   "colors": [
+    0,
+    1,
+    2
+   ],
+   "docks": 3,
+   "dockCapacity": 4,
+   "targetDeliveries": 22,
+   "spawnInterval": 2.0,
+   "offRate": 0.15,
+   "bufferSlots": 1,
+   "shiftRate": 0.25,
+   "shiftPeriod": 2.0,
+   "tutorial": "shifting",
+   "starScores": [
+    3250,
+    4870
+   ]
+  },
+  {
+   "id": 13,
+   "name": "5色ライン",
+   "difficulty": "normal",
+   "seed": 1481,
+   "colors": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   "docks": 4,
+   "dockCapacity": 4,
+   "targetDeliveries": 25,
+   "spawnInterval": 1.8,
+   "offRate": 0.25,
+   "bufferSlots": 2,
+   "starScores": [
+    3780,
+    5670
+   ]
+  },
+  {
+   "id": 14,
+   "name": "配送マーク",
+   "difficulty": "normal",
+   "seed": 1518,
+   "colors": [
+    0,
+    1,
+    2
+   ],
+   "docks": 3,
+   "dockCapacity": 4,
+   "targetDeliveries": 22,
+   "spawnInterval": 2.1,
+   "offRate": 0.15,
+   "bufferSlots": 1,
+   "useMarks": true,
+   "markDockRate": 0.45,
+   "tutorial": "marks",
+   "starScores": [
+    3150,
+    4720
+   ]
+  },
+  {
+   "id": 15,
+   "name": "タイムセール",
+   "difficulty": "normal",
+   "seed": 1555,
+   "colors": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "docks": 3,
+   "dockCapacity": 4,
+   "targetDeliveries": 25,
+   "spawnInterval": 1.7,
+   "offRate": 0.15,
+   "bufferSlots": 2,
+   "timeLimit": 55,
+   "tutorial": "timeLimit",
+   "starScores": [
+    3780,
+    5670
+   ]
+  },
+  {
+   "id": 16,
+   "name": "混載便",
+   "difficulty": "normal",
+   "seed": 1592,
+   "colors": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   "docks": 4,
+   "dockCapacity": 4,
+   "targetDeliveries": 25,
+   "spawnInterval": 1.8,
+   "offRate": 0.2,
+   "bufferSlots": 2,
+   "timedRate": 0.15,
+   "timedSeconds": 10,
+   "shiftRate": 0.1,
+   "starScores": [
+    3940,
+    5910
+   ]
+  },
+  {
+   "id": 17,
+   "name": "マーク専用便",
+   "difficulty": "normal",
+   "seed": 1629,
+   "colors": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "docks": 3,
+   "dockCapacity": 4,
+   "targetDeliveries": 25,
+   "spawnInterval": 1.9,
+   "offRate": 0.15,
+   "bufferSlots": 2,
+   "useMarks": true,
+   "markDockRate": 0.3,
+   "markOnlyRate": 0.3,
+   "starScores": [
+    3780,
+    5670
+   ]
+  },
+  {
+   "id": 18,
+   "name": "ピークタイム",
+   "difficulty": "normal",
+   "seed": 1666,
+   "colors": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   "docks": 4,
+   "dockCapacity": 4,
+   "targetDeliveries": 28,
+   "spawnInterval": 1.6,
+   "offRate": 0.2,
+   "bufferSlots": 2,
+   "timedRate": 0.1,
+   "timedSeconds": 10,
+   "starScores": [
+    4490,
+    6740
+   ]
+  },
+  {
+   "id": 19,
+   "name": "せわしない色",
+   "difficulty": "normal",
+   "seed": 1703,
+   "colors": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "docks": 4,
+   "dockCapacity": 4,
+   "targetDeliveries": 28,
+   "spawnInterval": 1.7,
+   "offRate": 0.2,
+   "bufferSlots": 2,
+   "shiftRate": 0.3,
+   "shiftPeriod": 1.6,
+   "starScores": [
+    4560,
+    6840
+   ]
+  },
+  {
+   "id": 20,
+   "name": "中堅昇格試験",
+   "difficulty": "normal",
+   "seed": 1740,
+   "colors": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   "docks": 4,
+   "dockCapacity": 4,
+   "targetDeliveries": 31,
+   "spawnInterval": 1.6,
+   "offRate": 0.2,
+   "bufferSlots": 2,
+   "timedRate": 0.12,
+   "timedSeconds": 10,
+   "shiftRate": 0.12,
+   "useMarks": true,
+   "markDockRate": 0.25,
+   "starScores": [
+    5130,
+    7690
+   ]
+  },
+  {
+   "id": 21,
+   "name": "節約仕分け",
+   "difficulty": "hard",
+   "seed": 1777,
+   "docks": 4,
+   "dockCapacity": 4,
+   "bufferSlots": 2,
+   "targetDeliveries": 24,
+   "maxMistakes": 3,
+   "colors": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   "spawnInterval": 1.7,
+   "offRate": 0.2,
+   "tutorial": "moves",
+   "moveLimit": 32,
+   "starScores": [
+    3600,
+    5400
+   ]
+  },
+  {
+   "id": 22,
+   "name": "6色ライン",
+   "difficulty": "hard",
+   "seed": 1814,
+   "docks": 4,
+   "dockCapacity": 4,
+   "bufferSlots": 2,
+   "targetDeliveries": 26,
+   "maxMistakes": 3,
+   "colors": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "spawnInterval": 1.7,
+   "offRate": 0.2,
+   "moveLimit": 34,
+   "starScores": [
+    3960,
+    5940
+   ]
+  },
+  {
+   "id": 23,
+   "name": "時限便ラッシュ",
+   "difficulty": "hard",
+   "seed": 1851,
+   "docks": 4,
+   "dockCapacity": 4,
+   "bufferSlots": 2,
+   "targetDeliveries": 26,
+   "maxMistakes": 3,
+   "colors": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   "spawnInterval": 1.6,
+   "offRate": 0.15,
+   "timedRate": 0.3,
+   "timedSeconds": 9,
+   "moveLimit": 33,
+   "starScores": [
+    4190,
+    6290
+   ]
+  },
+  {
+   "id": 24,
+   "name": "マーク＆カラー",
+   "difficulty": "hard",
+   "seed": 1888,
+   "docks": 4,
+   "dockCapacity": 4,
+   "bufferSlots": 2,
+   "targetDeliveries": 26,
+   "maxMistakes": 3,
+   "colors": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   "spawnInterval": 1.7,
+   "offRate": 0.2,
+   "useMarks": true,
+   "markDockRate": 0.45,
+   "markOnlyRate": 0.15,
+   "moveLimit": 33,
+   "starScores": [
+    3960,
+    5940
+   ]
+  },
+  {
+   "id": 25,
+   "name": "短いコンベア",
+   "difficulty": "hard",
+   "seed": 1925,
+   "docks": 4,
+   "dockCapacity": 4,
+   "bufferSlots": 2,
+   "targetDeliveries": 29,
+   "maxMistakes": 3,
+   "colors": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   "spawnInterval": 1.6,
+   "offRate": 0.2,
+   "beltCapacity": 5,
+   "shiftRate": 0.15,
+   "moveLimit": 36,
+   "starScores": [
+    4670,
+    7000
+   ]
+  },
+  {
+   "id": 26,
+   "name": "夜間配送",
+   "difficulty": "hard",
+   "seed": 1962,
+   "docks": 4,
+   "dockCapacity": 4,
+   "bufferSlots": 2,
+   "targetDeliveries": 29,
+   "maxMistakes": 3,
+   "colors": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "spawnInterval": 1.5,
+   "offRate": 0.2,
+   "timedRate": 0.15,
+   "timedSeconds": 9,
+   "shiftRate": 0.15,
+   "timeLimit": 60,
+   "moveLimit": 35,
+   "starScores": [
+    4800,
+    7200
+   ]
+  },
+  {
+   "id": 27,
+   "name": "一発勝負",
+   "difficulty": "hard",
+   "seed": 1999,
+   "docks": 4,
+   "dockCapacity": 4,
+   "bufferSlots": 2,
+   "targetDeliveries": 29,
+   "maxMistakes": 2,
+   "colors": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   "spawnInterval": 1.6,
+   "offRate": 0.2,
+   "useMarks": true,
+   "markDockRate": 0.35,
+   "moveLimit": 35,
+   "starScores": [
+    4590,
+    6880
+   ]
+  },
+  {
+   "id": 28,
+   "name": "高速ライン",
+   "difficulty": "hard",
+   "seed": 2036,
+   "docks": 4,
+   "dockCapacity": 4,
+   "bufferSlots": 2,
+   "targetDeliveries": 31,
+   "maxMistakes": 3,
+   "colors": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "spawnInterval": 1.4,
+   "offRate": 0.2,
+   "beltSpeed": 4.0,
+   "timedRate": 0.12,
+   "timedSeconds": 8,
+   "moveLimit": 37,
+   "starScores": [
+    5060,
+    7590
+   ]
+  },
+  {
+   "id": 29,
+   "name": "全部のせ",
+   "difficulty": "hard",
+   "seed": 2073,
+   "docks": 4,
+   "dockCapacity": 4,
+   "bufferSlots": 2,
+   "targetDeliveries": 31,
+   "maxMistakes": 3,
+   "colors": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "spawnInterval": 1.45,
+   "offRate": 0.22,
+   "timedRate": 0.12,
+   "timedSeconds": 9,
+   "shiftRate": 0.12,
+   "useMarks": true,
+   "markDockRate": 0.3,
+   "markOnlyRate": 0.1,
+   "moveLimit": 37,
+   "starScores": [
+    5130,
+    7690
+   ]
+  },
+  {
+   "id": 30,
+   "name": "工場長への道",
+   "difficulty": "hard",
+   "seed": 2110,
+   "docks": 4,
+   "dockCapacity": 4,
+   "bufferSlots": 2,
+   "targetDeliveries": 36,
+   "maxMistakes": 3,
+   "colors": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "spawnInterval": 1.4,
+   "offRate": 0.22,
+   "timedRate": 0.15,
+   "timedSeconds": 8,
+   "shiftRate": 0.15,
+   "useMarks": true,
+   "markDockRate": 0.35,
+   "markOnlyRate": 0.15,
+   "moveLimit": 42,
+   "starScores": [
+    6290,
+    9430
+   ]
+  }
+ ]
+}
