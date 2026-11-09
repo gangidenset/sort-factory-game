@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../app/services.dart';
@@ -61,6 +62,14 @@ class TitleScreen extends StatelessWidget {
                           const Spacer(),
                           _Logo(compact: box.maxHeight < 640),
                           const SizedBox(height: 8),
+                          if (kIsWeb)
+                            const Padding(
+                              padding: EdgeInsets.only(bottom: 6),
+                              child: Chip(
+                                label: Text('試遊版（Web）'),
+                                visualDensity: VisualDensity.compact,
+                              ),
+                            ),
                           const Text(
                             S.tagline,
                             style: TextStyle(

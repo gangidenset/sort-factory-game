@@ -24,6 +24,8 @@ Future<void> main() async {
   final analytics = DebugAnalytics();
   final progress = await ProgressController.load(
     SaveRepository(SharedPrefsStore(SharedPreferencesAsync())),
+    // Playtest only: https://.../?unlock=all opens every stage on the web build.
+    unlockAllStages: kIsWeb && Uri.base.queryParameters['unlock'] == 'all',
   );
   final stages = StageCatalog.fromJsonString(
     await rootBundle.loadString('assets/stages/stages.json'),

@@ -9,6 +9,12 @@ Flutter + Flame製、Android / iOS対応、オフラインで遊べる基本無�
 
 ---
 
+## 🎮 試遊（Web版）
+
+- https://gangidenset.github.io/sort-factory-game/ （`?unlock=all` で全ステージ開放）
+- テスター向け案内・質問票: [docs/PLAYTEST.md](docs/PLAYTEST.md)
+- 初回のみ、リポジトリの Settings → Pages → Source を「GitHub Actions」にする必要があります。
+
 ## 1. 技術構成
 
 | 項目 | 採用 | 備考 |
@@ -121,3 +127,4 @@ flutter build web --no-web-resources-cdn   # ブラウザ試遊ビルド
 | 2026-11-08 | AdMob（UMP同意・リワード・インタースティシャル頻度制御）、IAP（購入・復元・冪等な付与）を実装 |
 | 2026-11-08 | Flame描画（タップ/ドラッグ、ヒント、演出）と全8画面を実装。小画面でのタッチ領域不足・タイトル画面のはみ出し・ビルド中の通知などテストで検出し修正 |
 | 2026-11-08 | Webビルドでブラウザ上の実プレイを確認（ドラッグ仕分け・ミス演出・ヒント表示） |
+| 2026-11-09 | GitHub Pages への試遊版自動公開（CIでanalyze/test実行）、PC表示時のスマホ枠、`?unlock=all`、試遊ガイドを追加 |
