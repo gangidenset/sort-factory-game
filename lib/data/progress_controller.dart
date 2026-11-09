@@ -61,8 +61,15 @@ class MissionStatus {
 
 /// App-wide player state. All mutations persist immediately.
 class ProgressController extends ChangeNotifier {
-  ProgressController(this._repo, this.data, {DateTime Function()? clock})
-    : _clock = clock ?? DateTime.now;
+  ProgressController(
+    this._repo,
+    this.data, {
+    DateTime Function()? clock,
+    this.unlockAllStages = false,
+  }) : _clock = clock ?? DateTime.now;
+
+  /// Playtest switch (web build with `?unlock=all`): every stage selectable.
+  final bool unlockAllStages;
 
   final SaveRepository _repo;
   final DateTime Function() _clock;
@@ -71,7 +78,13 @@ class ProgressController extends ChangeNotifier {
   static Future<ProgressController> load(
     SaveRepository repo, {
     DateTime Function()? clock,
-  }) async => ProgressController(repo, await repo.load(), clock: clock);
+    bool unlockAllStages = false,
+  }) async => ProgressController(
+    repo,
+    await repo.load(),
+    clock: clock,
+    unlockAllStages: unlockAllStages,
+  );
 
   Future<void> _commit() async {
     notifyListeners();
@@ -108,7 +121,9 @@ class ProgressController extends ChangeNotifier {
   // Stages
 
   bool isUnlocked(int stageId) =>
-      stageId <= 1 || (data.stages[stageId - 1]?.cleared ?? false);
+      unlockAllStages ||
+      stageId <= 1 ||
+      (data.stages[stageId - 1]?.cleared ?? false);
 
   StageRecord? recordOf(int stageId) => data.stages[stageId];
 

@@ -138,6 +138,14 @@ void main() {
       expect(pc.isUnlocked(3), isFalse);
     });
 
+    test('playtest switch unlocks every stage', () async {
+      final all = await ProgressController.load(
+        SaveRepository(MemoryStore()),
+        unlockAllStages: true,
+      );
+      expect(all.isUnlocked(30), isTrue);
+    });
+
     test('failed play does not unlock next stage', () async {
       await pc.recordResult(result(id: 1, cleared: false, stars: 0));
       expect(pc.isUnlocked(2), isFalse);
