@@ -11,17 +11,15 @@ StageResult result({
   bool cleared = true,
   int score = 1000,
   int stars = 2,
-  int combo = 5,
+  int chain = 1,
   int deliveries = 10,
-  int timed = 0,
 }) => StageResult(
   stageId: id,
   cleared: cleared,
   score: score,
   stars: stars,
   deliveries: deliveries,
-  maxCombo: combo,
-  timedDelivered: timed,
+  maxChain: chain,
   seconds: 30,
 );
 
@@ -34,7 +32,7 @@ void main() {
         ..record(3).stars = 2
         ..record(3).bestScore = 999
         ..record(3).clears = 1
-        ..upgrades['conveyor'] = 2
+        ..upgrades['manual'] = 2
         ..unlocked.add('skin_mint')
         ..equippedSkin = 'skin_mint'
         ..entitlements.add('remove_ads')
@@ -50,7 +48,7 @@ void main() {
       expect(loaded.stages[3]!.stars, 2);
       expect(loaded.stages[3]!.bestScore, 999);
       expect(loaded.highestCleared, 3);
-      expect(loaded.upgradeLevel('conveyor'), 2);
+      expect(loaded.upgradeLevel('manual'), 2);
       expect(loaded.unlocked, contains('skin_mint'));
       expect(loaded.equippedSkin, 'skin_mint');
       expect(loaded.adsRemoved, isTrue);
@@ -90,7 +88,7 @@ void main() {
     test('bad values are sanitized', () async {
       final store = MemoryStore()
         ..data[SaveRepository.primaryKey] = jsonEncode({
-          'schemaVersion': 1,
+          'schemaVersion': 2,
           'coins': -50,
           'stages': {
             '1': {'stars': 9, 'clears': 1},
@@ -105,9 +103,21 @@ void main() {
       expect(d.settings.interstitialEvery, 2);
     });
 
-    test('data without version is treated as v1 and migrated', () {
-      final migrated = SaveMigrations.migrate({'coins': 5});
-      expect(SaveData.fromJson(migrated).coins, 5);
+    test('v1 save migrates: old stages dropped, old upgrades refunded', () {
+      final migrated = SaveMigrations.migrate({
+        'coins': 5,
+        'stages': {
+          '1': {'stars': 3, 'clears': 1},
+        },
+        'upgrades': {'conveyor': 2, 'sorter': 1, 'center': 1},
+        'entitlements': ['remove_ads'],
+      });
+      final d = SaveData.fromJson(migrated);
+      expect(d.coins, 5 + 200 + 500 + 450);
+      expect(d.stages, isEmpty);
+      expect(d.upgrades, {'center': 1});
+      expect(d.adsRemoved, isTrue);
+      expect(migrated['schemaVersion'], 2);
     });
 
     test('encode includes schema version', () {
@@ -172,14 +182,17 @@ void main() {
     });
 
     test('upgrades cost coins and apply modifiers', () async {
-      expect(await pc.buyUpgrade('conveyor'), isFalse);
+      expect(await pc.buyUpgrade('manual'), isFalse);
       await pc.addCoins(1000);
-      expect(await pc.buyUpgrade('conveyor'), isTrue);
+      expect(await pc.buyUpgrade('manual'), isTrue);
       expect(pc.data.coins, 800);
-      expect(pc.modifiers.extraBelt, 1);
-      expect(await pc.buyUpgrade('conveyor'), isTrue);
-      expect(await pc.buyUpgrade('conveyor'), isFalse); // max level
+      expect(pc.modifiers.extraUndo, 1);
+      expect(await pc.buyUpgrade('manual'), isTrue);
+      expect(await pc.buyUpgrade('manual'), isFalse); // max level
       expect(pc.data.coins, 300);
+      await pc.addCoins(600);
+      expect(await pc.buyUpgrade('shelf'), isTrue);
+      expect(pc.modifiers.extraShelf, 1);
     });
 
     test('center upgrade boosts coins', () {
@@ -227,7 +240,7 @@ void main() {
         expect(missions.length, 3);
         for (var i = 0; i < 6; i++) {
           await pc.recordResult(
-            result(score: 3000, combo: 16, deliveries: 15, timed: 2),
+            result(score: 3000, stars: 3, chain: 3, deliveries: 15),
           );
         }
         final done = pc.missions().where((m) => m.complete).toList();

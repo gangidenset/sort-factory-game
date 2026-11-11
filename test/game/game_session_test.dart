@@ -1,388 +1,381 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sort_factory/game/logic/game_session.dart';
 import 'package:sort_factory/game/logic/models.dart';
-import 'package:sort_factory/game/logic/scoring.dart';
+import 'package:sort_factory/game/logic/solver.dart';
 import 'package:sort_factory/game/logic/stage_config.dart';
 
-StageConfig cfg({
-  int docks = 2,
+StageConfig stage({
+  required List<List<int>> lanes,
+  required List<int> trucks,
   int cap = 3,
-  int target = 10,
-  int maxMistakes = 3,
-  int buffer = 1,
-  int belt = 6,
-  double spawn = 2,
-  double? timeLimit,
-  int? moveLimit,
-  double timedRate = 0,
-  double shiftRate = 0,
-  List<int> colors = const [0, 1],
-}) => StageConfig(
-  id: 1,
-  docks: docks,
-  dockCapacity: cap,
-  targetDeliveries: target,
-  maxMistakes: maxMistakes,
-  bufferSlots: buffer,
-  beltCapacity: belt,
-  spawnInterval: spawn,
-  timeLimit: timeLimit,
-  moveLimit: moveLimit,
-  timedRate: timedRate,
-  shiftRate: shiftRate,
-  colors: colors,
-  starScores: const [500, 1000],
-);
-
-GameSession started(StageConfig c) => GameSession(c)..start();
-
-/// Replaces the front package with one of the given color.
-Package putFront(GameSession s, {required int color, int mark = 0}) {
-  final p = Package(id: 999, colorA: color, mark: mark);
-  if (s.belt.isEmpty) {
-    s.belt.add(p);
-  } else {
-    s.belt[0] = p;
-  }
-  return p;
+  int docks = 2,
+  int shelf = 3,
+  Set<String> hidden = const {},
+  List<LaneLock> locks = const [],
+  int par = 0,
+}) {
+  final s = StageConfig(
+    id: 1,
+    lanes: lanes,
+    trucks: [for (final c in trucks) TruckSpec(c, cap)],
+    docks: docks,
+    shelf: shelf,
+    hidden: hidden,
+    locks: locks,
+    par: par,
+  );
+  s.validate();
+  return s;
 }
 
-int matchingDock(GameSession s, Package p) =>
-    s.docks.indexWhere((d) => d.requirement.matches(p));
-
-int wrongDock(GameSession s, Package p) =>
-    s.docks.indexWhere((d) => !d.requirement.matches(p));
+GameSession play(StageConfig c) => GameSession(c)..start();
 
 void main() {
-  group('delivery & scoring', () {
-    test('correct delivery scores and builds combo', () {
-      final s = started(cfg());
-      final req = s.docks[0].requirement;
-      putFront(s, color: req.color!);
-      final r = s.move(const FrontSource(), const DockTarget(0));
-      expect(r.outcome, MoveOutcome.correct);
-      expect(s.delivered, 1);
-      expect(s.combo, 1);
-      expect(s.score, Scoring.baseCorrect);
-      expect(s.docks[0].filled, 1);
-    });
-
-    test('combo increases points per delivery', () {
-      final s = started(cfg(cap: 10));
-      final c = s.docks[0].requirement.color!;
-      putFront(s, color: c);
-      s.move(const FrontSource(), const DockTarget(0));
-      putFront(s, color: c);
-      final r = s.move(const FrontSource(), const DockTarget(0));
-      expect(r.scoreDelta, Scoring.baseCorrect + Scoring.comboStep);
-      expect(s.maxCombo, 2);
-    });
-
-    test('combo bonus is capped', () {
-      const p = Package;
-      expect(p, isNotNull);
-      final pkg = Package(id: 1, colorA: 0);
-      expect(Scoring.correct(pkg, 100), Scoring.correct(pkg, 21));
-    });
-
-    test('wrong delivery counts as mistake and resets combo', () {
-      final s = started(cfg());
-      final c = s.docks[0].requirement.color!;
-      putFront(s, color: c);
-      s.move(const FrontSource(), const DockTarget(0));
-      final p = putFront(s, color: c);
-      final wd = wrongDock(s, p);
-      final r = s.move(const FrontSource(), DockTarget(wd));
-      expect(r.outcome, MoveOutcome.wrong);
-      expect(s.mistakes, 1);
-      expect(s.combo, 0);
-      expect(s.delivered, 1);
-    });
-
-    test('reaching max mistakes fails the stage', () {
-      final s = started(cfg(maxMistakes: 2));
-      for (var i = 0; i < 2; i++) {
-        final p = putFront(s, color: s.docks[0].requirement.color!);
-        s.move(const FrontSource(), DockTarget(wrongDock(s, p)));
-      }
-      expect(s.status, SessionStatus.failed);
-      expect(s.failReason, FailReason.mistakes);
-    });
-
-    test('truck departs when full and next requirement moves in', () {
-      final s = started(cfg(cap: 2));
-      final next = s.docks[0].next;
-      final c = s.docks[0].requirement.color!;
-      putFront(s, color: c);
-      s.move(const FrontSource(), const DockTarget(0));
-      putFront(s, color: c);
-      final r = s.move(const FrontSource(), const DockTarget(0));
-      expect(r.truckDeparted, isTrue);
-      expect(s.docks[0].filled, 0);
-      expect(s.docks[0].departures, 1);
-      expect(s.docks[0].requirement, next);
-      expect(
-        r.scoreDelta,
-        Scoring.baseCorrect + Scoring.comboStep + Scoring.truckBonus,
+  group('tapping', () {
+    test('front package goes to the matching truck', () {
+      final s = play(
+        stage(
+          lanes: [
+            [0, 0, 0],
+            [1, 1, 1],
+          ],
+          trucks: [0, 1],
+        ),
       );
+      expect(s.tap(0), isTrue);
+      expect(s.docks[0]!.filled, 1);
+      expect(s.lanes[0].length, 2);
+      expect(s.shelf, isEmpty);
+      expect(s.moves, 1);
     });
 
-    test('mark requirement must match mark too', () {
-      const req = Requirement(color: 1, mark: 2);
-      expect(req.matches(Package(id: 1, colorA: 1, mark: 2)), isTrue);
-      expect(req.matches(Package(id: 1, colorA: 1, mark: 1)), isFalse);
-      expect(req.matches(Package(id: 1, colorA: 0, mark: 2)), isFalse);
-      const markOnly = Requirement(mark: 3);
-      expect(markOnly.matches(Package(id: 1, colorA: 4, mark: 3)), isTrue);
+    test('package with no truck goes to the shelf', () {
+      final s = play(
+        stage(
+          lanes: [
+            [2, 0, 0],
+            [0, 1, 1],
+            [1, 2, 2],
+          ],
+          trucks: [0, 1, 2],
+          docks: 2,
+        ),
+      );
+      s.tap(0); // color 2, no truck parked yet
+      expect(s.shelf.map((p) => p.color), [2]);
+      expect(s.shelfPlacements, 1);
     });
 
-    test('reaching target clears the stage', () {
-      final s = started(cfg(target: 2, cap: 5));
-      for (var i = 0; i < 2; i++) {
-        putFront(s, color: s.docks[0].requirement.color!);
-        s.move(const FrontSource(), const DockTarget(0));
+    test('full truck departs, next arrives and pulls from shelf (chain)', () {
+      // Trucks: red, blue parked; green next. Shelf greens first, then fill red.
+      final s = play(
+        stage(
+          lanes: [
+            [2, 2, 2],
+            [0, 0, 0],
+            [1, 1, 1],
+          ],
+          trucks: [0, 1, 2],
+          shelf: 3,
+        ),
+      );
+      s.tap(0);
+      s.tap(0);
+      s.tap(0);
+      expect(s.shelf.length, 3);
+      s.tap(1);
+      s.tap(1);
+      s.drainEvents();
+      s.tap(1); // red departs → green arrives → 3 greens from shelf → departs
+      final events = s.drainEvents();
+      final departs = events
+          .where((e) => e.type == SessionEventType.depart)
+          .toList();
+      expect(departs.map((e) => e.chain), [1, 2]);
+      expect(s.maxChain, 2);
+      expect(s.shelf, isEmpty);
+      expect(s.shipped, 2);
+      expect(s.score, greaterThanOrEqualTo(100 + 200));
+    });
+
+    test('truck with most boxes of a color is preferred', () {
+      final s = play(
+        stage(
+          lanes: [
+            [0],
+            [0, 0, 0, 0, 0],
+          ],
+          trucks: [0, 0],
+          docks: 2,
+        ),
+      );
+      s.tap(1);
+      s.tap(1);
+      expect(s.docks.map((t) => t!.filled), [2, 0]);
+    });
+
+    test('shelf overflow fails the stage', () {
+      final s = play(
+        stage(
+          lanes: [
+            [2, 2, 3, 0, 0, 0],
+            [1, 1, 1],
+            [2, 3, 3],
+          ],
+          trucks: [0, 1, 2, 3],
+          shelf: 2,
+        ),
+      );
+      s.tap(0);
+      s.tap(0);
+      expect(s.status, SessionStatus.playing);
+      s.tap(0);
+      expect(s.status, SessionStatus.failed);
+      expect(s.failReason, FailReason.shelfOverflow);
+    });
+
+    test('shipping every truck clears the stage', () {
+      final s = play(
+        stage(
+          lanes: [
+            [0, 0, 0],
+            [1, 1, 1],
+          ],
+          trucks: [0, 1],
+          par: 0,
+        ),
+      );
+      for (var i = 0; i < 3; i++) {
+        s.tap(0);
+        s.tap(1);
       }
       expect(s.status, SessionStatus.cleared);
-      expect(s.stars, greaterThanOrEqualTo(1));
+      expect(s.stars, 3);
+      expect(s.drainEvents().last.type, SessionEventType.cleared);
     });
 
-    test('stars follow thresholds', () {
-      final c = cfg();
-      expect(c.starsFor(0), 1);
-      expect(c.starsFor(500), 2);
-      expect(c.starsFor(1000), 3);
+    test('stars depend on shelf placements vs par', () {
+      final c = stage(
+        lanes: [
+          [0, 0, 0],
+        ],
+        trucks: [0],
+        par: 1,
+      );
+      expect(c.starsFor(0), 3);
+      expect(c.starsFor(1), 3);
+      expect(c.starsFor(3), 2);
+      expect(c.starsFor(4), 1);
+    });
+
+    test('taps are ignored on empty lanes and before start', () {
+      final c = stage(
+        lanes: [
+          [0, 0, 0],
+          [],
+        ],
+        trucks: [0],
+      );
+      final s = GameSession(c);
+      expect(s.tap(0), isFalse);
+      s.start();
+      expect(s.tap(1), isFalse);
+      expect(s.tap(5), isFalse);
+      expect(s.moves, 0);
     });
   });
 
-  group('buffer & chute', () {
-    test('store front into buffer then deliver from buffer', () {
-      final s = started(cfg());
-      final p = putFront(s, color: s.docks[1].requirement.color!);
-      expect(
-        s.move(const FrontSource(), const BufferTarget(0)).outcome,
-        MoveOutcome.stored,
+  group('gimmicks', () {
+    test('hidden package is revealed when it reaches the front', () {
+      final s = play(
+        stage(
+          lanes: [
+            [0, 1, 0, 0],
+            [1, 1],
+          ],
+          trucks: [0, 1],
+          hidden: {'0:1'},
+        ),
       );
-      expect(s.buffer[0], same(p));
-      final r = s.move(const BufferSource(0), DockTarget(matchingDock(s, p)));
-      expect(r.outcome, MoveOutcome.correct);
-      expect(s.buffer[0], isNull);
-    });
-
-    test('cannot store into an occupied slot or move buffer to buffer', () {
-      final s = started(cfg());
-      putFront(s, color: 0);
-      s.move(const FrontSource(), const BufferTarget(0));
-      putFront(s, color: 1);
-      final before = s.movesUsed;
+      expect(s.lanes[0][1].hidden, isTrue);
+      s.tap(0);
+      expect(s.lanes[0][0].hidden, isFalse);
       expect(
-        s.move(const FrontSource(), const BufferTarget(0)).outcome,
-        MoveOutcome.invalid,
-      );
-      expect(
-        s.move(const BufferSource(0), const BufferTarget(0)).outcome,
-        MoveOutcome.invalid,
-      );
-      expect(s.movesUsed, before);
-    });
-
-    test('empty source and out-of-range targets are invalid', () {
-      final s = started(cfg(buffer: 0));
-      expect(
-        s.move(const BufferSource(0), const DockTarget(0)).outcome,
-        MoveOutcome.invalid,
-      );
-      putFront(s, color: 0);
-      expect(
-        s.move(const FrontSource(), const DockTarget(9)).outcome,
-        MoveOutcome.invalid,
-      );
-      expect(
-        s.move(const FrontSource(), const BufferTarget(0)).outcome,
-        MoveOutcome.invalid,
+        s.drainEvents().any((e) => e.type == SessionEventType.reveal),
+        isTrue,
       );
     });
 
-    test('chute discards without a mistake but breaks combo', () {
-      final s = started(cfg(cap: 9));
-      putFront(s, color: s.docks[0].requirement.color!);
-      s.move(const FrontSource(), const DockTarget(0));
-      putFront(s, color: 0);
-      final r = s.move(const FrontSource(), const ChuteTarget());
-      expect(r.outcome, MoveOutcome.discarded);
-      expect(s.mistakes, 0);
-      expect(s.combo, 0);
-      expect(s.discarded, 1);
+    test('locked lane opens after enough departures', () {
+      final s = play(
+        stage(
+          lanes: [
+            [0, 0, 0],
+            [1, 1, 1],
+          ],
+          trucks: [0, 1],
+          locks: const [LaneLock(1, 1)],
+        ),
+      );
+      expect(s.canTap(1), isFalse);
+      expect(s.unlockIn(1), 1);
+      s.tap(0);
+      s.tap(0);
+      s.tap(0);
+      expect(s.canTap(1), isTrue);
     });
 
-    test('moves are rejected when not playing', () {
-      final s = GameSession(cfg());
-      putFront(s, color: 0);
-      expect(
-        s.move(const FrontSource(), const ChuteTarget()).outcome,
-        MoveOutcome.invalid,
+    test('stuck when only locked lanes remain', () {
+      final s = play(
+        stage(
+          lanes: [
+            [0, 0, 1],
+            [1, 1, 0],
+          ],
+          trucks: [0, 1],
+          docks: 1,
+          shelf: 5,
+          locks: const [LaneLock(1, 5)],
+        ),
       );
+      s.tap(0);
+      s.tap(0);
+      s.tap(0);
+      expect(s.failReason, FailReason.stuck);
     });
   });
 
-  group('time & belt', () {
-    test('belt jams when full', () {
-      final s = started(cfg(belt: 3, spawn: 0.5));
-      for (var i = 0; i < 40 && !s.isOver; i++) {
-        s.update(0.25);
-      }
-      expect(s.failReason, FailReason.jam);
-    });
-
-    test('packages slide toward the front and never overlap', () {
-      final s = started(cfg(spawn: 0.3));
-      for (var i = 0; i < 10; i++) {
-        s.update(0.1);
-      }
-      for (var i = 0; i < s.belt.length; i++) {
-        expect(s.belt[i].pos, greaterThanOrEqualTo(i.toDouble()));
-      }
-    });
-
-    test('time limit fails the stage', () {
-      final s = started(cfg(timeLimit: 3, spawn: 100));
-      for (var i = 0; i < 5; i++) {
-        s.update(0.5);
-      }
-      expect(s.status, SessionStatus.playing);
-      s.update(0.6);
-      expect(s.failReason, FailReason.timeUp);
-    });
-
-    test('huge frame gaps are capped to 1 second', () {
-      final s = started(cfg(spawn: 100));
-      s.update(30);
-      expect(s.elapsed, closeTo(1, 1e-6));
-    });
-
-    test('move limit fails when moves run out', () {
-      final s = started(cfg(moveLimit: 10, target: 10));
-      for (var i = 0; i < 10 && !s.isOver; i++) {
-        putFront(s, color: 0);
-        s.move(const FrontSource(), const ChuteTarget());
-      }
-      expect(s.failReason, FailReason.outOfMoves);
-    });
-
-    test('timed package expires into a mistake', () {
-      final s = started(cfg(spawn: 100));
-      s.belt
-        ..clear()
-        ..add(Package(id: 5, colorA: 0, kind: PackageKind.timed, timeLimit: 2));
-      s.update(1);
-      expect(s.mistakes, 0);
-      s.update(1.1);
-      expect(s.mistakes, 1);
-      expect(s.expired, 1);
-      expect(s.belt, isEmpty);
-    });
-
-    test('shifting package alternates colors', () {
-      final p = Package(
-        id: 1,
-        colorA: 0,
-        colorB: 3,
-        kind: PackageKind.shifting,
-        shiftPeriod: 2,
+  group('undo & revive', () {
+    test('undo restores the previous state and uses a free undo', () {
+      final s = play(
+        stage(
+          lanes: [
+            [2, 0, 0, 0],
+            [1, 1, 1],
+            [2, 2],
+          ],
+          trucks: [0, 1, 2],
+        ),
       );
-      expect(p.color, 0);
-      p.age = 2.1;
-      expect(p.color, 3);
-      p.age = 4.1;
-      expect(p.color, 0);
+      final before = s.stateKey();
+      s.tap(0);
+      expect(s.shelf.length, 1);
+      expect(s.undo(), isTrue);
+      expect(s.stateKey(), before);
+      expect(s.shelf, isEmpty);
+      expect(s.freeUndos, 0);
+      s.tap(0);
+      expect(s.undo(), isFalse); // no free undos left
+      expect(s.undo(paid: true), isTrue);
     });
 
-    test('update is ignored when paused/over', () {
-      final s = GameSession(cfg());
-      s.update(5);
-      expect(s.elapsed, 0);
-    });
-  });
-
-  group('revive', () {
-    test('revive after mistakes restores play once', () {
-      final s = started(cfg(maxMistakes: 3));
-      for (var i = 0; i < 3; i++) {
-        final p = putFront(s, color: s.docks[0].requirement.color!);
-        s.move(const FrontSource(), DockTarget(wrongDock(s, p)));
-      }
+    test('revive undoes the fatal move and adds a shelf slot once', () {
+      final s = play(
+        stage(
+          lanes: [
+            [2, 2, 3, 0, 0, 0],
+            [1, 1, 1],
+            [2, 3, 3],
+          ],
+          trucks: [0, 1, 2, 3],
+          shelf: 2,
+        ),
+      );
+      s.tap(0);
+      s.tap(0);
+      s.tap(0);
       expect(s.canRevive, isTrue);
       expect(s.revive(), isTrue);
       expect(s.status, SessionStatus.playing);
-      expect(s.mistakes, 1);
-      for (var i = 0; i < 2; i++) {
-        final p = putFront(s, color: s.docks[0].requirement.color!);
-        s.move(const FrontSource(), DockTarget(wrongDock(s, p)));
-      }
-      expect(s.status, SessionStatus.failed);
-      expect(s.canRevive, isFalse);
-      expect(s.revive(), isFalse);
+      expect(s.shelfCapacity, 3);
+      expect(s.shelf.length, 2);
+      s.tap(0);
+      expect(s.status, SessionStatus.playing);
     });
 
-    test('revive after jam frees belt space', () {
-      final s = started(cfg(belt: 4, spawn: 0.5));
-      while (!s.isOver) {
-        s.update(0.25);
-      }
-      final len = s.belt.length;
-      s.revive();
-      expect(s.belt.length, len - 3);
-    });
-
-    test('revive after time up adds time', () {
-      final s = started(cfg(timeLimit: 2, spawn: 100));
-      s.update(1);
-      s.update(1);
-      s.update(0.1);
-      expect(s.failReason, FailReason.timeUp);
-      s.revive();
-      expect(s.timeLeft, greaterThan(10));
-    });
-  });
-
-  group('generation', () {
-    test('same seed gives same package sequence', () {
-      List<int> seq() {
-        final s = started(cfg(spawn: 0.5, belt: 30, colors: [0, 1, 2]));
-        for (var i = 0; i < 20; i++) {
-          s.update(0.5);
-        }
-        return s.belt.map((p) => p.color * 10 + p.mark).toList();
-      }
-
-      expect(seq(), seq());
-    });
-
-    test('open docks start with different requirements', () {
-      final s = GameSession(cfg(docks: 3, colors: [0, 1, 2, 3]));
-      final reqs = s.docks.map((d) => d.requirement).toSet();
-      expect(reqs.length, 3);
-    });
-
-    test('upgrades extend belt and buffer', () {
+    test('upgrades add shelf slots and free undos', () {
       final s = GameSession(
-        cfg(buffer: 1, belt: 6),
-        modifiers: const SessionModifiers(extraBelt: 1, extraBuffer: 1),
+        stage(
+          lanes: [
+            [0, 0, 0],
+          ],
+          trucks: [0],
+        ),
+        modifiers: const SessionModifiers(extraShelf: 1, extraUndo: 2),
       );
-      expect(s.beltCapacity, 7);
-      expect(s.buffer.length, 2);
-      final noBuf = GameSession(
-        cfg(buffer: 0),
-        modifiers: const SessionModifiers(extraBuffer: 2),
-      );
-      expect(noBuf.buffer.length, 0);
+      expect(s.shelfCapacity, 4);
+      expect(s.freeUndos, 3);
     });
   });
 
-  group('hint', () {
-    test('hint points to matching dock', () {
-      final s = started(cfg());
-      final p = putFront(s, color: s.docks[1].requirement.color!);
-      expect(s.hintForFront(), DockTarget(matchingDock(s, p)));
+  group('config validation', () {
+    test('package count must match truck seats', () {
+      expect(
+        () => stage(
+          lanes: [
+            [0, 0],
+          ],
+          trucks: [0],
+        ),
+        throwsFormatException,
+      );
+    });
+
+    test('json parsing', () {
+      final c = StageConfig.fromJson({
+        'id': 3,
+        'lanes': [
+          [0, 1],
+          [1, 0],
+        ],
+        'trucks': [0, 1],
+        'truckCapacity': 2,
+        'docks': 2,
+        'shelf': 4,
+        'hidden': [
+          [0, 1],
+        ],
+        'locks': [
+          {'lane': 1, 'after': 1},
+        ],
+        'par': 2,
+      });
+      expect(c.packageCount, 4);
+      expect(c.hidden, {'0:1'});
+      expect(c.locks.single.after, 1);
+      expect(c.par, 2);
+    });
+  });
+
+  group('solver', () {
+    test('solves a small puzzle and the solution clears it', () {
+      final c = stage(
+        lanes: [
+          [2, 0, 1],
+          [0, 2, 1],
+          [1, 0, 2],
+        ],
+        trucks: [0, 1, 2],
+        shelf: 2,
+      );
+      final sol = Solver().solve(play(c));
+      expect(sol, isNotNull);
+      final s = play(c);
+      for (final m in sol!) {
+        s.tap(m);
+      }
+      expect(s.status, SessionStatus.cleared);
+    });
+
+    test('reports unsolvable puzzles', () {
+      final c = stage(
+        lanes: [
+          [2, 2, 2, 3, 3, 3, 0, 0, 0, 1, 1, 1],
+        ],
+        trucks: [0, 1, 2, 3],
+        shelf: 2,
+      );
+      expect(Solver().solve(play(c)), isNull);
     });
   });
 }

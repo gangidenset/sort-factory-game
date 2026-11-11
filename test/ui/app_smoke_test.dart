@@ -7,7 +7,9 @@ import 'package:sort_factory/app/app.dart';
 import 'package:sort_factory/app/services.dart';
 import 'package:sort_factory/data/progress_controller.dart';
 import 'package:sort_factory/data/save_repository.dart';
+import 'package:sort_factory/game/logic/game_session.dart';
 import 'package:sort_factory/game/logic/models.dart';
+import 'package:sort_factory/game/logic/solver.dart';
 import 'package:sort_factory/game/logic/stage_repository.dart';
 import 'package:sort_factory/services/ads/ad_manager.dart';
 import 'package:sort_factory/services/ads/ad_service.dart';
@@ -64,7 +66,7 @@ void main() {
     });
   }
 
-  testWidgets('play stage 1 through taps until clear', (tester) async {
+  testWidgets('play stage 1 through real taps until clear', (tester) async {
     await setPhone(tester, const Size(390, 844));
     final svc = await tester.runAsync(makeServices);
     await tester.pumpWidget(SortFactoryApp(services: svc!));
@@ -73,8 +75,7 @@ void main() {
     await tester.tap(find.byIcon(Icons.play_arrow_rounded));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
-    // Tutorial card first.
-    expect(find.text('仕分けの基本'), findsOneWidget);
+    expect(find.text('出荷のきほん'), findsOneWidget);
     await tester.tap(find.text('スタート'));
     await tester.pump();
 
@@ -83,29 +84,55 @@ void main() {
               find.byWidgetPredicate((w) => w is GameWidget),
             ) as GameWidget).game!
             as dynamic;
-    // Play by tapping the hinted dock, like a player following the highlight.
-    for (var i = 0; i < 400; i++) {
-      await tester.pump(const Duration(milliseconds: 50));
-      final session = game.session;
-      if (session.isOver) break;
-      final front = session.front;
-      if (front == null || front.pos > 0.1) continue;
-      final hint = session.hintForFront();
-      if (hint is DockTarget) {
-        final rect = game.board.debugDockRect(hint.dock) as Rect;
-        final gameBox = tester.getTopLeft(
-          find.byWidgetPredicate((w) => w is GameWidget),
-        );
-        await tester.tapAt(gameBox + rect.center);
+    final solution = Solver().solve(game.session as GameSession)!;
+    final origin = tester.getTopLeft(
+      find.byWidgetPredicate((w) => w is GameWidget),
+    );
+    for (final lane in solution) {
+      // Wait for chain playback to finish, like a player would.
+      for (var i = 0; i < 40 && !(game.board.isIdle as bool); i++) {
+        await tester.pump(const Duration(milliseconds: 50));
       }
+      final rect = game.board.debugLaneRect(lane) as Rect;
+      await tester.tapAt(origin + rect.center);
+      await tester.pump(const Duration(milliseconds: 16));
     }
-    await tester.pump(const Duration(milliseconds: 300));
+    for (var i = 0; i < 60; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
     expect(game.session.status, SessionStatus.cleared);
-    expect(find.text('STAGE CLEAR!'), findsOneWidget);
-    // Progress was saved and stage 2 unlocked.
+    expect(find.text('ALL SHIPPED!'), findsOneWidget);
     await tester.pump(const Duration(milliseconds: 100));
     expect(svc.progress.isUnlocked(2), isTrue);
     expect(svc.progress.data.coins, greaterThan(0));
+  });
+
+  testWidgets('undo button reverts a move', (tester) async {
+    await setPhone(tester, const Size(390, 844));
+    final svc = await tester.runAsync(makeServices);
+    await svc!.progress.markTutorialSeen('basic');
+    await tester.pumpWidget(SortFactoryApp(services: svc));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.play_arrow_rounded));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    final game =
+        (tester.widget(
+              find.byWidgetPredicate((w) => w is GameWidget),
+            ) as GameWidget).game!
+            as dynamic;
+    final origin = tester.getTopLeft(
+      find.byWidgetPredicate((w) => w is GameWidget),
+    );
+    final before = game.session.stateKey() as String;
+    await tester.tapAt(origin + (game.board.debugLaneRect(0) as Rect).center);
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(game.session.moves, 1);
+    await tester.tap(find.text('戻す'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(game.session.stateKey(), before);
   });
 
   testWidgets('pause overlay pauses the session', (tester) async {
@@ -125,12 +152,10 @@ void main() {
               find.byWidgetPredicate((w) => w is GameWidget),
             ) as GameWidget).game!
             as dynamic;
-    final t = game.session.elapsed as double;
-    await tester.pump(const Duration(seconds: 1));
-    expect(game.session.elapsed, t);
+    expect(game.paused, isTrue);
     await tester.tap(find.text('つづける'));
     await tester.pump(const Duration(milliseconds: 100));
-    await tester.pump(const Duration(milliseconds: 100));
-    expect(game.session.elapsed as double, greaterThan(t));
+    expect(game.paused, isFalse);
+    expect(find.text('ポーズ'), findsNothing);
   });
 }

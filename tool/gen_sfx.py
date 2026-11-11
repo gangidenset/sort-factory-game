@@ -59,7 +59,7 @@ def write(name, samples):
             struct.pack('<h', int(max(-1, min(1, s)) * 32000)) for s in samples))
 
 write('tap', tone([(900, 700)], 0.05, 0.35, 'triangle'))
-write('correct', tone([(880, 880), (1320, 1320)], 0.14, 0.45, 'triangle'))
+write('correct', tone([(660, 1320)], 0.09, 0.45, 'triangle'))
 write('wrong', tone([(220, 160)], 0.22, 0.45, 'square'))
 write('store', tone([(500, 650)], 0.08, 0.4, 'triangle'))
 write('truck', concat(tone([(660, 660)], 0.08, 0.4, 'triangle'),
@@ -73,4 +73,12 @@ write('clear', concat(
 write('fail', concat(tone([(392, 392)], 0.15, 0.35, 'triangle'),
                      tone([(330, 330)], 0.15, 0.35, 'triangle'),
                      tone([(262, 200)], 0.35, 0.35, 'triangle')))
+# Rising chain stings: each chain level is a higher arpeggio.
+base = 523.25
+for level in range(2, 7):
+    f = base * (2 ** ((level - 2) * 3 / 12))
+    write('chain%d' % level, concat(
+        tone([(f, f)], 0.07, 0.35, 'triangle'),
+        tone([(f * 1.26, f * 1.26)], 0.07, 0.35, 'triangle'),
+        chord([tone([(f * 1.5, f * 1.5)], 0.25, 0.3, 'triangle'), tone([(f * 2, f * 2)], 0.25, 0.2)])))
 print('ok')

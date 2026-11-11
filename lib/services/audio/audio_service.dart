@@ -18,7 +18,10 @@ class AudioService {
   Future<void> preload() async {
     try {
       FlameAudio.audioCache.prefix = 'assets/audio/';
-      await FlameAudio.audioCache.loadAll(Sfx.values.map(_file).toList());
+      await FlameAudio.audioCache.loadAll([
+        ...Sfx.values.map(_file),
+        for (var i = 2; i <= 6; i++) 'chain$i.wav',
+      ]);
       _ready = true;
     } catch (e) {
       debugPrint('Audio preload failed: $e');
@@ -29,6 +32,14 @@ class AudioService {
     if (!_ready || !soundEnabled()) return;
     try {
       FlameAudio.play(_file(s), volume: s == Sfx.tap ? 0.5 : 0.8);
+    } catch (_) {}
+  }
+
+  /// Extra rising "ding" for chain level >= 2 (pitch climbs with the chain).
+  void chainPitch(int chain) {
+    if (chain < 2 || !_ready || !soundEnabled()) return;
+    try {
+      FlameAudio.play('chain${chain.clamp(2, 6)}.wav', volume: 0.8);
     } catch (_) {}
   }
 

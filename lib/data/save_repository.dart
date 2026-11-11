@@ -37,8 +37,30 @@ class SaveMigrations {
 
   static final Map<int, Map<String, dynamic> Function(Map<String, dynamic>)>
   steps = {
-    // Example for the future:
-    // 1: (j) => {...j, 'schemaVersion': 2, 'newField': j['old'] ?? 0},
+    // v2: the game became a turn-based puzzle with new stages. Old stage
+    // records and the old belt/buffer upgrades no longer apply: drop them and
+    // refund the coins spent on those upgrades.
+    1: (j) {
+      final ups = Map<String, dynamic>.from((j['upgrades'] as Map?) ?? {});
+      const oldCosts = {
+        'conveyor': [200, 500],
+        'sorter': [450],
+      };
+      var refund = 0;
+      oldCosts.forEach((id, costs) {
+        final lvl = ((ups.remove(id) as num?) ?? 0).toInt();
+        for (var i = 0; i < lvl && i < costs.length; i++) {
+          refund += costs[i];
+        }
+      });
+      return {
+        ...j,
+        'schemaVersion': 2,
+        'stages': <String, dynamic>{},
+        'upgrades': ups,
+        'coins': ((j['coins'] as num?) ?? 0).toInt() + refund,
+      };
+    },
   };
 
   static Map<String, dynamic> migrate(Map<String, dynamic> json) {

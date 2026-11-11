@@ -14,8 +14,7 @@ class StageResult {
     required this.score,
     required this.stars,
     required this.deliveries,
-    required this.maxCombo,
-    required this.timedDelivered,
+    required this.maxChain,
     required this.seconds,
   });
 
@@ -24,8 +23,7 @@ class StageResult {
   final int score;
   final int stars;
   final int deliveries;
-  final int maxCombo;
-  final int timedDelivered;
+  final int maxChain;
   final double seconds;
 }
 
@@ -128,19 +126,19 @@ class ProgressController extends ChangeNotifier {
   StageRecord? recordOf(int stageId) => data.stages[stageId];
 
   SessionModifiers get modifiers {
-    var belt = 0, buffer = 0;
+    var shelf = 0, undo = 0;
     for (final u in upgradeDefs) {
       final lvl = data.upgradeLevel(u.id);
       switch (u.effect) {
-        case UpgradeEffect.beltCapacity:
-          belt += lvl;
-        case UpgradeEffect.bufferSlots:
-          buffer += lvl;
+        case UpgradeEffect.shelfSlots:
+          shelf += lvl;
+        case UpgradeEffect.freeUndo:
+          undo += lvl;
         case UpgradeEffect.coinBonus:
           break;
       }
     }
-    return SessionModifiers(extraBelt: belt, extraBuffer: buffer);
+    return SessionModifiers(extraShelf: shelf, extraUndo: undo);
   }
 
   Future<void> recordAttempt(int stageId) async {
@@ -322,8 +320,8 @@ class ProgressController extends ChangeNotifier {
       final cur = daily.progress[m.id] ?? 0;
       final next = switch (m.kind) {
         MissionKind.clears => cur + (r.cleared ? 1 : 0),
-        MissionKind.maxCombo => r.maxCombo > cur ? r.maxCombo : cur,
-        MissionKind.timedDeliveries => cur + r.timedDelivered,
+        MissionKind.maxChain => r.maxChain > cur ? r.maxChain : cur,
+        MissionKind.perfectClears => cur + (r.cleared && r.stars == 3 ? 1 : 0),
         MissionKind.totalScore => cur + r.score,
         MissionKind.deliveries => cur + r.deliveries,
       };

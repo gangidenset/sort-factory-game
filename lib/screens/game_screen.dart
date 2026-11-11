@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
 
@@ -8,6 +6,7 @@ import '../data/progress_controller.dart';
 import '../game/flame/sort_factory_game.dart';
 import '../game/logic/game_session.dart';
 import '../game/logic/models.dart';
+import '../game/logic/solver.dart';
 import '../game/logic/stage_config.dart';
 import '../services/ads/ad_service.dart';
 import '../services/audio/audio_service.dart';
@@ -34,19 +33,20 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   bool _coinsDoubled = false;
   bool _failRecorded = false;
   bool _busy = false;
-  Timer? _hudTimer;
+  bool _initialized = false;
   final _hud = ValueNotifier(0);
 
   AppServices get _svc => context.services;
   StageConfig get _stage => widget.stage;
+
+  /// Hints are free in the first stages (tutorial); later they cost an ad.
+  bool get _freeHint => _stage.id <= 3;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
   }
-
-  bool _initialized = false;
 
   @override
   void didChangeDependencies() {
@@ -60,7 +60,6 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _hudTimer?.cancel();
     _hud.dispose();
     super.dispose();
   }
@@ -79,8 +78,8 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       session: _session,
       skin: FactorySkin.fromId(progress.data.equippedSkin),
       boxStyle: progress.data.equippedBox,
-      onEvents: _onEvents,
-      alwaysHint: _stage.id <= 2 && progress.data.settings.showHints,
+      onEvent: _onEvent,
+      onSettled: _onSettled,
     );
     _reward = null;
     _coinsDoubled = false;
@@ -100,7 +99,6 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     _phase = _Phase.playing;
     _session.start();
     final svc = _svc;
-    // May run during build (first frame): notify listeners after it.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       svc.progress.recordAttempt(_stage.id);
       svc.analytics.log('stage_start', {
@@ -108,36 +106,37 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         'attempt': _attempt,
       });
     });
-    _hudTimer?.cancel();
-    _hudTimer = Timer.periodic(
-      const Duration(milliseconds: 200),
-      (_) => _hud.value++,
-    );
   }
 
-  void _onEvents(List<SessionEvent> events) {
+  void _onEvent(SessionEvent e) {
     final audio = _svc.audio;
-    for (final e in events) {
-      switch (e.type) {
-        case SessionEventType.correct:
-          audio.feedback(Sfx.correct);
-        case SessionEventType.wrong || SessionEventType.expired:
-          audio.feedback(Sfx.wrong);
-        case SessionEventType.stored || SessionEventType.discarded:
-          audio.feedback(Sfx.store);
-        case SessionEventType.truckDeparted:
-          audio.feedback(Sfx.truck);
-        case SessionEventType.comboMilestone:
-          audio.feedback(Sfx.combo);
-        case SessionEventType.cleared:
-          scheduleMicrotask(_onCleared);
-        case SessionEventType.failed:
-          scheduleMicrotask(_onFailed);
-        case SessionEventType.spawned:
-          break;
-      }
+    switch (e.type) {
+      case SessionEventType.move:
+        audio.feedback(switch (e.destination) {
+          ToTruck() => Sfx.correct,
+          ToShelf() => Sfx.store,
+          _ => Sfx.wrong,
+        });
+      case SessionEventType.depart:
+        audio.feedback(e.chain >= 2 ? Sfx.combo : Sfx.truck);
+        audio.chainPitch(e.chain);
+      case SessionEventType.reveal:
+        audio.play(Sfx.tap);
+      default:
+        break;
     }
     _hud.value++;
+  }
+
+  /// Playback finished and the session ended: show the result.
+  void _onSettled() {
+    if (!mounted) return;
+    if (_session.status == SessionStatus.cleared) {
+      _onCleared();
+    } else if (_session.status == SessionStatus.failed) {
+      _svc.audio.feedback(Sfx.fail);
+      setState(() => _phase = _Phase.failed);
+    }
   }
 
   StageResult _result() => StageResult(
@@ -146,14 +145,12 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     score: _session.score,
     stars: _session.stars,
     deliveries: _session.delivered,
-    maxCombo: _session.maxCombo,
-    timedDelivered: _session.timedDelivered,
-    seconds: _session.elapsed,
+    maxChain: _session.maxChain,
+    seconds: 0,
   );
 
   Future<void> _onCleared() async {
-    if (!mounted || _phase == _Phase.cleared) return;
-    _hudTimer?.cancel();
+    if (_phase == _Phase.cleared) return;
     _svc.audio.feedback(Sfx.clear);
     setState(() => _phase = _Phase.cleared);
     final reward = await _svc.progress.recordResult(_result());
@@ -161,21 +158,15 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       'stage': _stage.id,
       'score': _session.score,
       'stars': _session.stars,
-      'seconds': _session.elapsed.round(),
-      'mistakes': _session.mistakes,
+      'moves': _session.moves,
+      'shelf': _session.shelfPlacements,
+      'chain': _session.maxChain,
+      'undos': _session.undosUsed,
       'revived': _session.revivesUsed,
     });
     if (mounted) setState(() => _reward = reward);
   }
 
-  void _onFailed() {
-    if (!mounted || _phase == _Phase.failed) return;
-    _hudTimer?.cancel();
-    _svc.audio.feedback(Sfx.fail);
-    setState(() => _phase = _Phase.failed);
-  }
-
-  /// Records a failure once the player gives up (not before a revive choice).
   Future<void> _recordFailIfNeeded() async {
     if (_phase != _Phase.failed || _failRecorded) return;
     _failRecorded = true;
@@ -183,8 +174,8 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     _svc.analytics.log('stage_fail', {
       'stage': _stage.id,
       'reason': _session.failReason?.name ?? 'quit',
-      'delivered': _session.delivered,
-      'seconds': _session.elapsed.round(),
+      'shipped': _session.shipped,
+      'moves': _session.moves,
     });
   }
 
@@ -229,53 +220,55 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _revive() async {
-    if (_busy) return;
+  Future<bool> _watchAd(RewardPlacement placement) async {
+    if (_busy) return false;
     setState(() => _busy = true);
-    final ok = await _svc.ads.showRewarded(RewardPlacement.revive);
-    if (!mounted) return;
+    _game.pauseEngine();
+    final ok = await _svc.ads.showRewarded(placement);
+    if (!mounted) return false;
+    _game.resumeEngine();
     setState(() => _busy = false);
-    if (ok && _session.revive()) {
+    if (!ok) showSnack(context, '広告を読み込めませんでした');
+    return ok;
+  }
+
+  Future<void> _undo() async {
+    if (!_session.canUndo || !_game.board.isIdle) return;
+    if (_session.freeUndos > 0) {
+      _session.undo();
+    } else {
+      if (!await _watchAd(RewardPlacement.hint)) return;
+      _session.undo(paid: true);
+      _svc.analytics.log('undo_ad', {'stage': _stage.id});
+    }
+    _svc.audio.play(Sfx.tap);
+    _game.resync();
+    _hud.value++;
+  }
+
+  Future<void> _hint() async {
+    if (_phase != _Phase.playing || !_game.board.isIdle) return;
+    if (!_freeHint && !await _watchAd(RewardPlacement.hint)) return;
+    final lane = Solver(maxNodes: 30000).hint(_session);
+    if (lane != null) _game.showHint(lane);
+    _svc.analytics.log('hint_used', {'stage': _stage.id});
+  }
+
+  Future<void> _revive() async {
+    if (!await _watchAd(RewardPlacement.revive)) return;
+    if (_session.revive()) {
       _svc.analytics.log('revive', {'stage': _stage.id});
-      _phase = _Phase.playing;
-      _hudTimer = Timer.periodic(
-        const Duration(milliseconds: 200),
-        (_) => _hud.value++,
-      );
-      setState(() {});
-    } else if (!ok) {
-      showSnack(context, '広告を読み込めませんでした');
+      _game.resync();
+      setState(() => _phase = _Phase.playing);
     }
   }
 
   Future<void> _doubleCoins() async {
     final reward = _reward;
-    if (_busy || reward == null || _coinsDoubled) return;
-    setState(() => _busy = true);
-    final ok = await _svc.ads.showRewarded(RewardPlacement.doubleCoins);
+    if (reward == null || _coinsDoubled) return;
+    final ok = await _watchAd(RewardPlacement.doubleCoins);
     if (ok) await _svc.progress.addCoins(reward.coins);
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _coinsDoubled = ok;
-    });
-    if (!ok) showSnack(context, '広告を読み込めませんでした');
-  }
-
-  Future<void> _hint() async {
-    if (_busy || _phase != _Phase.playing) return;
-    _game.pauseEngine();
-    setState(() => _busy = true);
-    final ok = await _svc.ads.showRewarded(RewardPlacement.hint);
-    if (!mounted) return;
-    if (ok) {
-      _game.hintTime = 20;
-      _svc.analytics.log('hint_used', {'stage': _stage.id});
-    } else {
-      showSnack(context, '広告を読み込めませんでした');
-    }
-    _game.resumeEngine();
-    setState(() => _busy = false);
+    if (mounted) setState(() => _coinsDoubled = ok);
   }
 
   @override
@@ -305,9 +298,10 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
                     stage: _stage,
                     tick: _hud,
                     skin: skin,
+                    freeHint: _freeHint,
                     onPause: _pause,
-                    onHint: _game.alwaysHint ? null : _hint,
-                    hintActive: () => _game.hintActive,
+                    onUndo: _undo,
+                    onHint: _hint,
                   ),
                   Expanded(
                     child: GameWidget(key: ObjectKey(_game), game: _game),
@@ -408,7 +402,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       const SizedBox(height: 20),
       FilledButton(onPressed: _resume, child: const Text('つづける')),
       const SizedBox(height: 10),
-      OutlinedButton(onPressed: _retry, child: const Text('やりなおす')),
+      OutlinedButton(onPressed: _retry, child: const Text('最初からやりなおす')),
       const SizedBox(height: 10),
       OutlinedButton(onPressed: _exit, child: const Text('ステージ選択へ')),
       const SizedBox(height: 6),
@@ -427,11 +421,23 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     final reward = _reward;
     final rec = _svc.progress.recordOf(_stage.id);
     final hasNext = _svc.stages.nextOf(_stage.id) != null;
+    final stars = _session.stars;
     return _panel(
       children: [
-        _title('STAGE CLEAR!', color: AppColors.success),
+        _title('ALL SHIPPED!', color: AppColors.success),
         const SizedBox(height: 8),
-        Center(child: StarRow(_session.stars, size: 44)),
+        Center(child: StarRow(stars, size: 48)),
+        const SizedBox(height: 6),
+        Text(
+          stars == 3
+              ? 'パーフェクト！'
+              : '★3条件：棚に置くのは${_stage.par}回まで（今回${_session.shelfPlacements}回）',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: stars == 3 ? AppColors.coin : Colors.black54,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
         const SizedBox(height: 8),
         Text(
           'スコア ${_session.score}',
@@ -447,7 +453,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
           ),
         ),
         Text(
-          '最大コンボ ${_session.maxCombo}　ミス ${_session.mistakes}',
+          '最大${_session.maxChain}連鎖　${_session.moves}手',
           textAlign: TextAlign.center,
           style: const TextStyle(color: Colors.black54),
         ),
@@ -479,7 +485,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
           ),
           for (final u in reward.newUnlocks)
             Text(
-              '🎁 「${u.name}」を入手！',
+              '「${u.name}」を入手！',
               textAlign: TextAlign.center,
               style: const TextStyle(fontWeight: FontWeight.w700),
             ),
@@ -500,7 +506,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
             Expanded(
               child: OutlinedButton(
                 onPressed: _retry,
-                child: const Text('リトライ'),
+                child: Text(stars < 3 ? '★3に挑戦' : 'リトライ'),
               ),
             ),
             const SizedBox(width: 8),
@@ -520,7 +526,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     final reason = _session.failReason;
     return _panel(
       children: [
-        _title('FAILED', color: AppColors.danger),
+        _title('おしい！', color: AppColors.danger),
         const SizedBox(height: 8),
         if (reason != null)
           Text(
@@ -530,7 +536,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
           ),
         const SizedBox(height: 4),
         Text(
-          '配送 ${_session.delivered} / ${_stage.targetDeliveries}',
+          '出荷 ${_session.shipped} / ${_session.totalTrucks} 台',
           textAlign: TextAlign.center,
           style: const TextStyle(color: Colors.black54),
         ),
@@ -545,7 +551,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 10),
         ],
-        FilledButton.tonal(onPressed: _retry, child: const Text('リトライ')),
+        FilledButton.tonal(onPressed: _retry, child: const Text('最初からやりなおす')),
         const SizedBox(height: 10),
         OutlinedButton(onPressed: _exit, child: const Text('ステージ選択へ')),
       ],
@@ -559,18 +565,20 @@ class _Hud extends StatelessWidget {
     required this.stage,
     required this.tick,
     required this.skin,
+    required this.freeHint,
     required this.onPause,
+    required this.onUndo,
     required this.onHint,
-    required this.hintActive,
   });
 
   final GameSession session;
   final StageConfig stage;
   final ValueNotifier<int> tick;
   final FactorySkin skin;
+  final bool freeHint;
   final VoidCallback onPause;
-  final VoidCallback? onHint;
-  final bool Function() hintActive;
+  final VoidCallback onUndo;
+  final VoidCallback onHint;
 
   @override
   Widget build(BuildContext context) {
@@ -579,94 +587,49 @@ class _Hud extends StatelessWidget {
       valueListenable: tick,
       builder: (context, _, _) {
         final s = session;
-        final progress = s.delivered / stage.targetDeliveries;
-        final livesLeft = stage.maxMistakes - s.mistakes;
         return Padding(
-          padding: const EdgeInsets.fromLTRB(8, 4, 12, 0),
-          child: Column(
+          padding: const EdgeInsets.fromLTRB(4, 2, 8, 0),
+          child: Row(
             children: [
-              Row(
-                children: [
-                  IconButton(
-                    onPressed: onPause,
-                    icon: Icon(Icons.pause_circle_filled, size: 36, color: fg),
-                    tooltip: 'ポーズ',
-                  ),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'STAGE ${stage.id}　配送 ${s.delivered}/${stage.targetDeliveries}',
-                          style: TextStyle(
-                            color: fg,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(6),
-                          child: LinearProgressIndicator(
-                            value: progress.clamp(0, 1),
-                            minHeight: 10,
-                            backgroundColor: fg.withValues(alpha: 0.12),
-                            color: AppColors.success,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Text(
-                    '${s.score}',
-                    style: TextStyle(
-                      color: fg,
-                      fontSize: 24,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                ],
+              IconButton(
+                onPressed: onPause,
+                icon: Icon(Icons.pause_circle_filled, size: 34, color: fg),
+                tooltip: 'ポーズ',
               ),
-              Row(
-                children: [
-                  const SizedBox(width: 12),
-                  for (var i = 0; i < stage.maxMistakes; i++)
-                    Icon(
-                      i < livesLeft ? Icons.favorite : Icons.favorite_border,
-                      color: AppColors.danger,
-                      size: 20,
-                    ),
-                  const SizedBox(width: 10),
-                  if (s.combo >= 2)
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
                     Text(
-                      '${s.combo} COMBO',
-                      style: const TextStyle(
-                        color: AppColors.coin,
-                        fontWeight: FontWeight.w900,
+                      'STAGE ${stage.id}  ${stage.name}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: fg, fontWeight: FontWeight.w900),
+                    ),
+                    Text(
+                      'スコア ${s.score}　棚 ${s.shelfPlacements}回（★3: ${stage.par}回以内）',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: fg.withValues(alpha: 0.7),
+                        fontSize: 12,
                       ),
                     ),
-                  const Spacer(),
-                  if (s.timeLeft != null)
-                    _pill(
-                      Icons.timer,
-                      '${s.timeLeft!.ceil()}秒',
-                      s.timeLeft! < 10,
-                      fg,
-                    ),
-                  if (s.movesLeft != null)
-                    _pill(
-                      Icons.touch_app,
-                      '残り${s.movesLeft}手',
-                      s.movesLeft! <= 3,
-                      fg,
-                    ),
-                  if (onHint != null)
-                    TextButton.icon(
-                      onPressed: hintActive() ? null : onHint,
-                      icon: const Icon(Icons.lightbulb, size: 18),
-                      label: Text(hintActive() ? 'ヒント中' : 'ヒント'),
-                    ),
-                ],
+                  ],
+                ),
+              ),
+              _HudButton(
+                icon: Icons.undo_rounded,
+                label: '戻す',
+                badge: s.freeUndos > 0 ? '${s.freeUndos}' : null,
+                ad: s.freeUndos <= 0,
+                onTap: s.canUndo ? onUndo : null,
+              ),
+              _HudButton(
+                icon: Icons.lightbulb_rounded,
+                label: 'ヒント',
+                ad: !freeHint,
+                onTap: s.status == SessionStatus.playing ? onHint : null,
               ),
             ],
           ),
@@ -674,24 +637,90 @@ class _Hud extends StatelessWidget {
       },
     );
   }
+}
 
-  Widget _pill(IconData icon, String text, bool urgent, Color fg) => Padding(
-    padding: const EdgeInsets.only(left: 6),
-    child: Chip(
-      visualDensity: VisualDensity.compact,
-      avatar: Icon(
-        icon,
-        size: 16,
-        color: urgent ? Colors.white : AppColors.ink,
-      ),
-      backgroundColor: urgent ? AppColors.danger : Colors.white,
-      label: Text(
-        text,
-        style: TextStyle(
-          fontWeight: FontWeight.w800,
-          color: urgent ? Colors.white : AppColors.ink,
+class _HudButton extends StatelessWidget {
+  const _HudButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.badge,
+    this.ad = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+  final String? badge;
+  final bool ad;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onTap != null;
+    return Padding(
+      padding: const EdgeInsets.only(left: 6),
+      child: Material(
+        color: Colors.white.withValues(alpha: enabled ? 1 : 0.5),
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: onTap,
+          child: SizedBox(
+            width: 56,
+            height: 52,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      icon,
+                      color: enabled ? AppColors.primary : Colors.black26,
+                    ),
+                    Text(
+                      label,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+                if (badge != null || ad)
+                  Positioned(
+                    right: 3,
+                    top: 3,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 5,
+                        vertical: 1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: ad ? AppColors.coin : AppColors.success,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: ad
+                          ? const Icon(
+                              Icons.smart_display,
+                              size: 11,
+                              color: Colors.white,
+                            )
+                          : Text(
+                              badge!,
+                              style: const TextStyle(
+                                fontSize: 10,
+                                color: Colors.white,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
