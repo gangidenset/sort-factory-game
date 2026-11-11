@@ -37,8 +37,7 @@ StageResult clear(int id) => StageResult(
   score: 100,
   stars: 1,
   deliveries: 5,
-  maxCombo: 2,
-  timedDelivered: 0,
+  maxChain: 1,
   seconds: 20,
 );
 

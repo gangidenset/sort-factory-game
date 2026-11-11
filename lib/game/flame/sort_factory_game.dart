@@ -11,29 +11,30 @@ import '../logic/models.dart';
 import 'board_layout.dart';
 import 'package_painter.dart';
 
-/// Flame game hosting a [GameSession]. All rules live in the session; this
-/// class renders it and translates touches into moves.
+/// Flame game hosting a [GameSession].
+///
+/// The session resolves a tap (including whole departure chains) instantly.
+/// The board then *replays* the resulting events one by one on its own visual
+/// copy of the state, so chains read clearly: box flies → truck departs →
+/// next truck rolls in → shelf boxes hop in → next departure...
 class SortFactoryGame extends FlameGame {
   SortFactoryGame({
     required this.session,
     required this.skin,
     required this.boxStyle,
-    required this.onEvents,
-    this.alwaysHint = false,
+    required this.onEvent,
+    required this.onSettled,
   });
 
   final GameSession session;
   final FactorySkin skin;
   final String boxStyle;
-  final bool alwaysHint;
 
-  /// Called with each batch of session events (sound, HUD, end of stage).
-  final void Function(List<SessionEvent> events) onEvents;
+  /// Called as each event is *played* (sound, haptics, HUD).
+  final void Function(SessionEvent e) onEvent;
 
-  /// Seconds of hint display left (granted by rewarded ad).
-  double hintTime = 0;
-
-  bool get hintActive => alwaysHint || hintTime > 0;
+  /// Called when playback is idle and the session is over (show result).
+  final VoidCallback onSettled;
 
   late final BoardComponent board;
 
@@ -46,269 +47,397 @@ class SortFactoryGame extends FlameGame {
     add(board);
   }
 
-  @override
-  void update(double dt) {
-    super.update(dt);
-    if (hintTime > 0) hintTime = math.max(0, hintTime - dt);
-    session.update(dt);
-    final events = session.drainEvents();
-    if (events.isNotEmpty) {
-      board.onSessionEvents(events);
-      onEvents(events);
-    }
-  }
+  /// Highlights [lane] as a hint until the next tap.
+  void showHint(int lane) => board.hintLane = lane;
+
+  /// Re-syncs visuals after undo / revive.
+  void resync() => board.resync();
+}
+
+class _VBox {
+  _VBox(this.id, this.color, {this.hidden = false});
+  final int id;
+  final int color;
+  bool hidden;
+  double reveal = 0; // flip animation
+}
+
+class _VTruck {
+  _VTruck(this.id, this.color, this.capacity, this.filled);
+  final int id;
+  final int color;
+  final int capacity;
+  int filled;
+  double arrive = 0; // 1 → 0 slide-in
+  double bounce = 0;
 }
 
 class _Flyer {
-  _Flyer(this.pkg, this.from, this.to, this.outcome);
-  final Package pkg;
+  _Flyer(
+    this.box,
+    this.from,
+    this.to,
+    this.toSize,
+    this.onLand, {
+    this.fall = false,
+  });
+  final _VBox box;
   final Offset from;
   final Offset to;
-  final MoveOutcome outcome;
+  final double toSize;
+  final VoidCallback onLand;
+  final bool fall;
   double t = 0;
-  static const duration = 0.16;
+  static const duration = 0.2;
+}
+
+class _Departing {
+  _Departing(this.truck, this.dock);
+  final _VTruck truck;
+  final int dock;
+  double t = 0;
+  static const duration = 0.55;
 }
 
 class _Floater {
-  _Floater(this.text, this.pos, this.color, {this.big = false});
+  _Floater(this.text, this.pos, this.color, {this.size = 20});
   final String text;
   final Offset pos;
   final Color color;
-  final bool big;
+  final double size;
   double t = 0;
-  static const duration = 0.9;
+  static const duration = 1.0;
+}
+
+class _Particle {
+  _Particle(this.pos, this.vel, this.color, this.size);
+  Offset pos;
+  Offset vel;
+  final Color color;
+  final double size;
+  double t = 0;
+  double spin = 0;
+  static const life = 0.9;
 }
 
 class BoardComponent extends PositionComponent
-    with HasGameReference<SortFactoryGame>, TapCallbacks, DragCallbacks {
+    with HasGameReference<SortFactoryGame>, TapCallbacks {
   BoardLayout? _layout;
   late PackagePainter _painter;
+  final _rng = math.Random(7);
 
-  Source _selected = const FrontSource();
+  // Visual state (replayed from events).
+  final List<List<_VBox>> _lanes = [];
+  final List<_VTruck?> _docks = [];
+  final List<_VBox> _shelf = [];
+  int _queueShown = 0;
 
-  // Drag state
-  Source? _dragSource;
-  Offset? _dragPos;
+  final List<SessionEvent> _pending = [];
+  double _wait = 0;
+  int? _bufferedTap;
+  bool _settledNotified = false;
 
   final List<_Flyer> _flyers = [];
+  final Map<int, int> _inbound = {}; // truck id -> boxes in flight
+  final List<_Departing> _departing = [];
   final List<_Floater> _floaters = [];
-  final Map<int, double> _dockFlash =
-      {}; // dock -> remaining (positive=ok, negative=bad)
-  final Map<int, double> _dockSwap = {};
+  final List<_Particle> _particles = [];
   double _shake = 0;
   double _time = 0;
+  int? hintLane;
 
   final _paint = Paint();
   final _stroke = Paint()..style = PaintingStyle.stroke;
 
   GameSession get s => game.session;
 
-  /// Dock rectangle in game coordinates (used by widget tests).
-  @visibleForTesting
-  Rect debugDockRect(int dock) => _layout!.dockRects[dock];
+  bool get isIdle => _pending.isEmpty && _flyers.isEmpty && _wait <= 0;
 
   @override
   Future<void> onLoad() async {
     _painter = PackagePainter(game.boxStyle);
+    // Web loads CJK fallback fonts lazily: drop cached text layouts when
+    // fonts change so labels don't stay as tofu.
+    PaintingBinding.instance.systemFonts.addListener(_textCache.clear);
+    resync();
   }
+
+  @override
+  void onRemove() {
+    PaintingBinding.instance.systemFonts.removeListener(_textCache.clear);
+    super.onRemove();
+  }
+
+  /// Copies the logical state into the visual state (start, undo, revive).
+  void resync() {
+    s.drainEvents();
+    _pending.clear();
+    _flyers.clear();
+    _inbound.clear();
+    _wait = 0;
+    _bufferedTap = null;
+    _settledNotified = false;
+    hintLane = null;
+    _lanes
+      ..clear()
+      ..addAll([
+        for (final l in s.lanes)
+          [for (final p in l) _VBox(p.id, p.color, hidden: p.hidden)],
+      ]);
+    _docks
+      ..clear()
+      ..addAll([
+        for (final t in s.docks)
+          t == null ? null : _VTruck(t.id, t.color, t.capacity, t.filled),
+      ]);
+    _shelf
+      ..clear()
+      ..addAll([for (final p in s.shelf) _VBox(p.id, p.color)]);
+    _queueShown = s.queue.length;
+    _relayout();
+  }
+
+  @visibleForTesting
+  Rect debugLaneRect(int lane) => _layout!.laneRects[lane];
 
   @override
   void onGameResize(Vector2 size) {
     super.onGameResize(size);
     this.size = size;
+    _relayout();
+  }
+
+  void _relayout() {
+    if (size.x <= 0 || size.y <= 0) return;
+    final maxDepth = s.config.lanes.fold(0, (a, l) => math.max(a, l.length));
     _layout = BoardLayout(
       size: Size(size.x, size.y),
+      lanes: s.lanes.length,
+      maxDepth: maxDepth,
       docks: s.docks.length,
-      beltCapacity: s.beltCapacity,
-      bufferSlots: s.buffer.length,
+      shelfSlots: s.config.shelf + 2, // room for upgrade / revive slots
     );
-  }
-
-  @override
-  void update(double dt) {
-    _time += dt;
-    for (final f in _flyers) {
-      f.t += dt;
-    }
-    _flyers.removeWhere((f) => f.t >= _Flyer.duration);
-    for (final f in _floaters) {
-      f.t += dt;
-    }
-    _floaters.removeWhere((f) => f.t >= _Floater.duration);
-    for (final m in [_dockFlash, _dockSwap]) {
-      for (final k in m.keys.toList()) {
-        final v = m[k]!;
-        final nv = v > 0 ? math.max(0.0, v - dt) : math.min(0.0, v + dt);
-        if (nv == 0) {
-          m.remove(k);
-        } else {
-          m[k] = nv;
-        }
-      }
-    }
-    _shake = math.max(0, _shake - dt);
-    // Selected buffer slot emptied (e.g. timed package expired).
-    if (_selected case BufferSource(:final slot)
-        when slot >= s.buffer.length || s.buffer[slot] == null) {
-      _selected = const FrontSource();
-    }
-  }
-
-  void onSessionEvents(List<SessionEvent> events) {
-    final l = _layout;
-    if (l == null) return;
-    for (final e in events) {
-      switch (e.type) {
-        case SessionEventType.truckDeparted:
-          _dockSwap[e.dock!] = 0.35;
-        case SessionEventType.expired:
-          _shake = 0.25;
-          _floaters.add(_Floater('時間切れ!', l.frontCenter, AppColors.danger));
-        case SessionEventType.comboMilestone:
-          _floaters.add(
-            _Floater(
-              '${e.combo} COMBO!',
-              l.frontCenter.translate(0, -l.pkgSize * 2),
-              AppColors.coin,
-              big: true,
-            ),
-          );
-        default:
-          break;
-      }
-    }
   }
 
   // ---------------------------------------------------------------------------
   // Input
 
-  Offset _local(Vector2 v) => Offset(v.x, v.y);
-
-  Source? _sourceAt(Offset p) {
-    final l = _layout!;
-    if (l.frontRect.inflate(l.pkgSize * 0.2).contains(p) && s.front != null) {
-      return const FrontSource();
+  @override
+  void onTapDown(TapDownEvent event) {
+    final l = _layout;
+    if (l == null) return;
+    final lane = l.laneAt(Offset(event.localPosition.x, event.localPosition.y));
+    if (lane == null) return;
+    if (isIdle) {
+      _doTap(lane);
+    } else {
+      _bufferedTap = lane; // feels responsive during chain playback
     }
-    for (var i = 0; i < l.bufferRects.length; i++) {
-      if (l.bufferRects[i].inflate(6).contains(p) && s.buffer[i] != null) {
-        return BufferSource(i);
-      }
-    }
-    return null;
   }
 
-  Target? _targetAt(Offset p, {bool generous = false}) {
-    final l = _layout!;
-    final grow = generous ? l.pkgSize * 0.35 : 4.0;
-    for (var i = 0; i < l.dockRects.length; i++) {
-      // Docks extend upward a bit so drags that end just above still count.
-      final r = l.dockRects[i];
-      final hit = Rect.fromLTRB(
-        r.left,
-        r.top - grow * 2,
-        r.right,
-        r.bottom + grow,
-      );
-      if (hit.contains(p)) return DockTarget(i);
-    }
-    for (var i = 0; i < l.bufferRects.length; i++) {
-      if (l.bufferRects[i].inflate(grow).contains(p)) return BufferTarget(i);
-    }
-    if (l.chuteRect.inflate(grow).contains(p)) return const ChuteTarget();
-    return null;
-  }
-
-  Offset _sourceCenter(Source src) => switch (src) {
-    FrontSource() => _layout!.frontCenter,
-    BufferSource(:final slot) => _layout!.bufferRects[slot].center,
-  };
-
-  Offset _targetCenter(Target t) => switch (t) {
-    DockTarget(:final dock) => _layout!.dockRects[dock].center,
-    BufferTarget(:final slot) => _layout!.bufferRects[slot].center,
-    ChuteTarget() => _layout!.chuteRect.center,
-  };
-
-  void _perform(Source src, Target tgt, {Offset? from}) {
-    final start = from ?? _sourceCenter(src);
-    final r = s.move(src, tgt);
-    _selected = const FrontSource();
-    if (r.outcome == MoveOutcome.invalid) return;
-    _flyers.add(_Flyer(r.package!, start, _targetCenter(tgt), r.outcome));
-    final l = _layout!;
-    switch (r.outcome) {
-      case MoveOutcome.correct:
-        final dock = (tgt as DockTarget).dock;
-        _dockFlash[dock] = 0.3;
+  void _doTap(int lane) {
+    if (!s.canTap(lane)) {
+      if (s.status == SessionStatus.playing && s.isLocked(lane)) {
         _floaters.add(
           _Floater(
-            '+${r.scoreDelta}',
-            l.dockRects[dock].topCenter,
-            AppColors.success,
+            'LOCK',
+            _layout!.laneRects[lane].topCenter.translate(0, 30),
+            AppColors.danger,
           ),
         );
-      case MoveOutcome.wrong:
-        final dock = (tgt as DockTarget).dock;
-        _dockFlash[dock] = -0.4;
-        _shake = 0.25;
+      }
+      return;
+    }
+    hintLane = null;
+    s.tap(lane);
+    _pending.addAll(s.drainEvents());
+    _settledNotified = false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Playback
+
+  @override
+  void update(double dt) {
+    _time += dt;
+    final l = _layout;
+    if (l == null) return;
+
+    for (final f in List.of(_flyers)) {
+      f.t += dt;
+      if (f.t >= _Flyer.duration) {
+        _flyers.remove(f);
+        f.onLand();
+      }
+    }
+    for (final d in _departing) {
+      d.t += dt;
+    }
+    _departing.removeWhere((d) => d.t >= _Departing.duration);
+    for (final f in _floaters) {
+      f.t += dt;
+    }
+    _floaters.removeWhere((f) => f.t >= _Floater.duration);
+    for (final p in _particles) {
+      p.t += dt;
+      p.vel = p.vel.translate(0, 900 * dt);
+      p.pos += p.vel * dt;
+      p.spin += dt * 10;
+    }
+    _particles.removeWhere((p) => p.t >= _Particle.life);
+    for (final t in _docks) {
+      if (t == null) continue;
+      t.arrive = math.max(0, t.arrive - dt * 3.2);
+      t.bounce = math.max(0, t.bounce - dt * 5);
+    }
+    for (final lane in _lanes) {
+      for (final b in lane) {
+        if (b.reveal > 0) b.reveal = math.max(0, b.reveal - dt * 4);
+      }
+    }
+    _shake = math.max(0, _shake - dt);
+
+    _wait -= dt;
+    while (_wait <= 0 && _pending.isNotEmpty) {
+      _play(_pending.removeAt(0));
+    }
+    if (isIdle) {
+      final buffered = _bufferedTap;
+      _bufferedTap = null;
+      if (buffered != null && s.status == SessionStatus.playing) {
+        _doTap(buffered);
+      } else if (s.isOver && !_settledNotified && _departing.isEmpty) {
+        _settledNotified = true;
+        game.onSettled();
+      }
+    }
+  }
+
+  void _play(SessionEvent e) {
+    final l = _layout!;
+    game.onEvent(e);
+    switch (e.type) {
+      case SessionEventType.move:
+        final p = e.package!;
+        late _VBox box;
+        late Offset from;
+        switch (e.origin!) {
+          case LaneOrigin(:final lane):
+            box = _lanes[lane].isNotEmpty
+                ? _lanes[lane].removeAt(0)
+                : _VBox(p.id, p.color);
+            from = l.packageCenter(lane, 0);
+          case ShelfOrigin(:final slot):
+            final i = slot.clamp(0, math.max(0, _shelf.length - 1)).toInt();
+            box = _shelf.isNotEmpty ? _shelf.removeAt(i) : _VBox(p.id, p.color);
+            from = l
+                .shelfSlotRects[math.min(slot, l.shelfSlotRects.length - 1)]
+                .center;
+        }
+        box.hidden = false;
+        switch (e.destination!) {
+          case ToTruck(:final dock):
+            final t = _docks[dock]!;
+            final seat = t.filled + (_inbound[t.id] ?? 0);
+            _inbound[t.id] = (_inbound[t.id] ?? 0) + 1;
+            final to = BoardTruck.seat(
+              l.dockRects[dock],
+              math.min(seat, t.capacity - 1),
+              t.capacity,
+            );
+            _flyers.add(
+              _Flyer(
+                box,
+                from,
+                to,
+                BoardTruck.seatBox(l.dockRects[dock], t.capacity),
+                () {
+                  _inbound[t.id] = (_inbound[t.id] ?? 1) - 1;
+                  t.filled = math.min(t.capacity, t.filled + 1);
+                  t.bounce = 1;
+                },
+              ),
+            );
+            // Let the box land before its truck drives off.
+            final departsNext =
+                _pending.isNotEmpty &&
+                _pending.first.type == SessionEventType.depart;
+            _wait = departsNext ? _Flyer.duration + 0.02 : 0.12;
+          case ToShelf(:final slot):
+            final to = l
+                .shelfSlotRects[math.min(slot, l.shelfSlotRects.length - 1)]
+                .center;
+            _flyers.add(
+              _Flyer(box, from, to, l.pkgSize * 0.9, () => _shelf.add(box)),
+            );
+            _wait = 0.1;
+          case Overflow():
+            final to = Offset(l.shelfRect.right + 20, l.shelfRect.center.dy);
+            _flyers.add(
+              _Flyer(box, from, to, l.pkgSize, () => _shake = 0.4, fall: true),
+            );
+            _wait = 0.25;
+        }
+      case SessionEventType.depart:
+        final d = e.dock!;
+        final gone = _docks[d];
+        if (gone != null) {
+          gone.filled = gone.capacity;
+          _departing.add(_Departing(gone, d));
+        }
+        final next = e.arrived;
+        _docks[d] = next == null
+            ? null
+            : (_VTruck(next.id, next.color, next.capacity, 0)..arrive = 1);
+        if (next != null) _queueShown = math.max(0, _queueShown - 1);
+        final rect = l.dockRects[d];
+        _burst(rect.center, packageColors[e.departed!.color], 18 + 6 * e.chain);
         _floaters.add(
-          _Floater('ミス!', l.dockRects[dock].topCenter, AppColors.danger),
+          _Floater(
+            e.chain >= 2 ? '${e.chain}連鎖!' : '出荷!',
+            rect.center.translate(0, -rect.height * 0.2),
+            e.chain >= 2 ? AppColors.coin : AppColors.success,
+            size: e.chain >= 2 ? 28 + 4.0 * e.chain : 22,
+          ),
         );
-      default:
+        if (e.chain >= 2) _shake = 0.12 + 0.04 * e.chain;
+        _wait = 0.32;
+      case SessionEventType.reveal:
+        final lane = e.lane!;
+        if (_lanes[lane].isNotEmpty) {
+          _lanes[lane].first
+            ..hidden = false
+            ..reveal = 1;
+        }
+      case SessionEventType.cleared:
+        for (var i = 0; i < 4; i++) {
+          _burst(
+            Offset(size.x * (0.2 + 0.2 * i), size.y * 0.35),
+            packageColors[i % packageColors.length],
+            24,
+          );
+        }
+      case SessionEventType.shelfCompacted ||
+          SessionEventType.undone ||
+          SessionEventType.failed:
         break;
     }
   }
 
-  @override
-  void onTapUp(TapUpEvent event) {
-    if (s.status != SessionStatus.playing || _layout == null) return;
-    final p = _local(event.localPosition);
-
-    final tgt = _targetAt(p);
-    // Tapping an occupied buffer slot selects it (or deselects).
-    if (tgt is BufferTarget && s.buffer[tgt.slot] != null) {
-      final src = BufferSource(tgt.slot);
-      _selected = _selected == src ? const FrontSource() : src;
-      return;
+  void _burst(Offset at, Color color, int n) {
+    for (var i = 0; i < n; i++) {
+      final a = _rng.nextDouble() * math.pi * 2;
+      final v = 180 + _rng.nextDouble() * 320;
+      final palette = [color, Colors.white, AppColors.coin];
+      _particles.add(
+        _Particle(
+          at,
+          Offset(math.cos(a) * v, math.sin(a) * v - 260),
+          palette[i % palette.length],
+          4 + _rng.nextDouble() * 5,
+        ),
+      );
     }
-    if (tgt != null) {
-      _perform(_selected, tgt);
-      return;
-    }
-    if (_sourceAt(p) is FrontSource) _selected = const FrontSource();
-  }
-
-  @override
-  void onDragStart(DragStartEvent event) {
-    super.onDragStart(event);
-    if (s.status != SessionStatus.playing || _layout == null) return;
-    final p = _local(event.localPosition);
-    _dragSource = _sourceAt(p);
-    _dragPos = _dragSource == null ? null : p;
-  }
-
-  @override
-  void onDragUpdate(DragUpdateEvent event) {
-    if (_dragPos == null) return;
-    _dragPos = _dragPos! + _local(event.localDelta);
-  }
-
-  @override
-  void onDragEnd(DragEndEvent event) {
-    super.onDragEnd(event);
-    final src = _dragSource, pos = _dragPos;
-    _dragSource = null;
-    _dragPos = null;
-    if (src == null || pos == null || s.status != SessionStatus.playing) return;
-    final tgt = _targetAt(pos, generous: true);
-    if (tgt != null) _perform(src, tgt, from: pos);
-  }
-
-  @override
-  void onDragCancel(DragCancelEvent event) {
-    super.onDragCancel(event);
-    _dragSource = null;
-    _dragPos = null;
   }
 
   // ---------------------------------------------------------------------------
@@ -321,42 +450,50 @@ class BoardComponent extends PositionComponent
     if (l == null) return;
     c.save();
     if (_shake > 0) {
-      final k = _shake * 24;
-      c.translate(math.sin(_time * 80) * k * 0.3, 0);
-    }
-    final hint = game.hintActive ? _hint() : null;
-    _renderBelt(c, l);
-    _renderBuffer(c, l, hint);
-    _renderChute(c, l, hint);
-    _renderDocks(c, l, hint);
-    _renderBeltPackages(c, l);
-    for (final f in _flyers) {
-      final k = Curves.easeIn.transform((f.t / _Flyer.duration).clamp(0, 1));
-      final pos = Offset.lerp(f.from, f.to, k)!;
-      _painter.drawPackage(
-        c,
-        f.pkg,
-        pos,
-        l.pkgSize * (1 - 0.4 * k),
-        alpha: 1 - 0.5 * k,
+      c.translate(
+        math.sin(_time * 70) * _shake * 14,
+        math.cos(_time * 55) * _shake * 6,
       );
     }
-    if (_dragPos != null && _dragSource != null) {
-      final p = _packageAt(_dragSource!);
-      if (p != null) {
-        final over = _targetAt(_dragPos!, generous: true);
-        if (over != null) _outline(c, _targetRect(l, over), Colors.white, 4);
-        _painter.drawPackage(c, p, _dragPos!, l.pkgSize * 1.1);
-      }
+    _renderQueue(c, l);
+    _renderDocks(c, l);
+    _renderShelf(c, l);
+    _renderLanes(c, l);
+    for (final f in _flyers) {
+      final k = Curves.easeInOut.transform((f.t / _Flyer.duration).clamp(0, 1));
+      var pos = Offset.lerp(f.from, f.to, k)!;
+      pos = pos.translate(0, -math.sin(k * math.pi) * 40); // arc
+      if (f.fall) pos = pos.translate(0, k * k * 60);
+      final size = l.pkgSize + (f.toSize - l.pkgSize) * k;
+      _painter.drawBox(c, f.box.color, pos, size, happy: true);
+    }
+    for (final p in _particles) {
+      final a = 1 - p.t / _Particle.life;
+      _paint.color = p.color.withValues(alpha: a);
+      c.save();
+      c.translate(p.pos.dx, p.pos.dy);
+      c.rotate(p.spin);
+      c.drawRect(
+        Rect.fromCenter(
+          center: Offset.zero,
+          width: p.size,
+          height: p.size * 0.6,
+        ),
+        _paint,
+      );
+      c.restore();
     }
     for (final f in _floaters) {
       final k = f.t / _Floater.duration;
+      final pop = k < 0.15
+          ? 0.6 + k / 0.15 * 0.6
+          : 1.2 - math.min(0.2, (k - 0.15));
       _text(
         c,
         f.text,
-        f.pos.translate(0, -30 * k - 10),
-        f.big ? 26 : 18,
-        f.color.withValues(alpha: 1 - k),
+        f.pos.translate(0, -40 * k),
+        f.size * pop,
+        f.color.withValues(alpha: (1 - k * k).clamp(0, 1)),
         bold: true,
         outline: true,
       );
@@ -364,298 +501,224 @@ class BoardComponent extends PositionComponent
     c.restore();
   }
 
-  Package? _packageAt(Source src) => switch (src) {
-    FrontSource() => s.front,
-    BufferSource(:final slot) => s.buffer[slot],
-  };
-
-  Rect _targetRect(BoardLayout l, Target t) => switch (t) {
-    DockTarget(:final dock) => l.dockRects[dock],
-    BufferTarget(:final slot) => l.bufferRects[slot],
-    ChuteTarget() => l.chuteRect,
-  };
-
-  (Source, Target)? _hint() {
-    final b = s.hintForBuffer();
-    if (b != null) return (BufferSource(b.$1), DockTarget(b.$2));
-    final t = s.hintForFront();
-    return t == null ? null : (const FrontSource(), t);
-  }
-
-  void _renderBelt(Canvas c, BoardLayout l) {
-    final skin = game.skin;
-    final belt = RRect.fromRectXY(l.beltRect, 14, 14);
-    _paint.color = skin.belt;
-    c.drawRRect(belt, _paint);
-    // Moving rollers.
-    c.save();
-    c.clipRRect(belt);
-    _paint.color = Colors.white.withValues(alpha: 0.08);
-    final step = l.spacing / 2;
-    final offset = (_time * s.config.beltSpeed * l.spacing) % step;
-    for (
-      var y = l.beltRect.top - step + offset;
-      y < l.beltRect.bottom;
-      y += step
-    ) {
-      c.drawRect(
-        Rect.fromLTWH(l.beltRect.left, y, l.beltRect.width, step * 0.35),
-        _paint,
-      );
-    }
-    c.restore();
-    // Jam warning.
-    if (s.jamWarning) {
-      final pulse = 0.5 + 0.5 * math.sin(_time * 10);
-      _outline(
-        c,
-        l.beltRect,
-        AppColors.danger.withValues(alpha: 0.4 + 0.6 * pulse),
-        4,
-      );
-      _text(
-        c,
-        '詰まり注意!',
-        l.beltRect.topCenter.translate(0, -12),
-        14,
-        AppColors.danger,
-        bold: true,
-      );
-    }
-    // Sorting point marker.
-    _stroke
-      ..color = skin.accent
-      ..strokeWidth = 3;
-    c.drawRRect(
-      RRect.fromRectXY(
-        Rect.fromCenter(
-          center: l.frontCenter,
-          width: l.pkgSize * 1.3,
-          height: l.pkgSize * 1.3,
-        ),
-        12,
-        12,
-      ),
-      _stroke,
-    );
-  }
-
-  void _renderBeltPackages(Canvas c, BoardLayout l) {
-    c.save();
-    c.clipRect(l.beltRect.inflate(l.pkgSize * 0.3));
-    for (var i = s.belt.length - 1; i >= 0; i--) {
-      final p = s.belt[i];
-      if (_dragPos != null && _dragSource is FrontSource && i == 0) continue;
-      final selectedFront = i == 0 && _selected is FrontSource;
-      _painter.drawPackage(
-        c,
-        p,
-        l.beltPosition(p.pos),
-        l.pkgSize,
-        highlight: selectedFront && p.pos < 0.05,
-      );
-    }
-    c.restore();
-  }
-
-  void _renderBuffer(Canvas c, BoardLayout l, (Source, Target)? hint) {
-    for (var i = 0; i < l.bufferRects.length; i++) {
-      final r = l.bufferRects[i];
-      _paint.color = game.skin.onBackground.withValues(alpha: 0.08);
-      c.drawRRect(RRect.fromRectXY(r, 12, 12), _paint);
-      _dashed(c, r, game.skin.onBackground.withValues(alpha: 0.35));
-      final p = s.buffer[i];
-      final dragging = _dragSource == BufferSource(i) && _dragPos != null;
-      if (p != null && !dragging) {
-        _painter.drawPackage(
-          c,
-          p,
-          r.center,
-          l.pkgSize,
-          highlight: _selected == BufferSource(i),
-        );
-      } else if (p == null) {
-        _text(
-          c,
-          '保管',
-          r.center,
-          12,
-          game.skin.onBackground.withValues(alpha: 0.5),
-        );
-      }
-      if (hint != null &&
-          (hint.$2 == BufferTarget(i) || hint.$1 == BufferSource(i))) {
-        _pulseOutline(c, r);
-      }
-    }
-  }
-
-  void _renderChute(Canvas c, BoardLayout l, (Source, Target)? hint) {
-    final r = l.chuteRect;
-    _paint.color = const Color(0xFF8A94A6).withValues(alpha: 0.25);
-    c.drawRRect(RRect.fromRectXY(r, 12, 12), _paint);
-    _dashed(c, r, const Color(0xFF8A94A6));
-    _returnArrow(
-      c,
-      r.center.translate(0, -8),
-      r.width * 0.32,
-      game.skin.onBackground.withValues(alpha: 0.7),
-    );
+  void _renderQueue(Canvas c, BoardLayout l) {
+    final r = l.queueRect;
     _text(
       c,
-      '返品',
-      r.center.translate(0, 14),
+      'NEXT',
+      Offset(r.left + 20, r.center.dy),
       11,
-      game.skin.onBackground.withValues(alpha: 0.7),
+      game.skin.onBackground.withValues(alpha: 0.6),
+      bold: true,
     );
-    if (hint?.$2 is ChuteTarget) _pulseOutline(c, r);
-  }
-
-  /// U-turn arrow icon (drawn, so it needs no font glyph).
-  void _returnArrow(Canvas c, Offset center, double size, Color color) {
-    _stroke
-      ..color = color
-      ..strokeWidth = size * 0.16
-      ..strokeCap = StrokeCap.round;
-    final r = size * 0.38;
-    final path = Path()
-      ..moveTo(center.dx + r, center.dy + r)
-      ..lineTo(center.dx + r, center.dy)
-      ..arcToPoint(
-        Offset(center.dx - r, center.dy),
-        radius: Radius.circular(r),
-        clockwise: false,
-      )
-      ..lineTo(center.dx - r, center.dy + r * 0.6);
-    c.drawPath(path, _stroke);
-    final head = Path()
-      ..moveTo(center.dx - r * 1.6, center.dy + r * 0.1)
-      ..lineTo(center.dx - r, center.dy + r * 0.9)
-      ..lineTo(center.dx - r * 0.4, center.dy + r * 0.1);
-    c.drawPath(head, _stroke);
-  }
-
-  void _renderDocks(Canvas c, BoardLayout l, (Source, Target)? hint) {
-    for (var i = 0; i < s.docks.length; i++) {
-      final d = s.docks[i];
-      var r = l.dockRects[i];
-      final swap = _dockSwap[i];
-      if (swap != null) r = r.translate(0, (swap / 0.35) * r.height * 0.25);
-
-      final rr = RRect.fromRectXY(r, 16, 16);
-      _paint.color = Colors.white;
-      c.drawRRect(
-        rr.shift(const Offset(0, 3)),
-        _paint..color = const Color(0x22000000),
+    final q = s.queue;
+    final shownStart = q.length - _queueShown;
+    var x = r.left + 50;
+    for (
+      var i = math.max(0, shownStart);
+      i < q.length && x < r.right - 30;
+      i++
+    ) {
+      _painter.drawMiniTruck(
+        c,
+        Offset(x + 12, r.center.dy),
+        16,
+        q[i].color,
+        alpha: i == shownStart ? 1 : 0.75,
       );
-      _paint.color = Colors.white;
-      c.drawRRect(rr, _paint);
+      x += 34;
+    }
+    final remaining = _queueShown + _docks.whereType<_VTruck>().length;
+    _text(
+      c,
+      '残り$remaining台',
+      Offset(r.right - 30, r.center.dy),
+      11,
+      game.skin.onBackground.withValues(alpha: 0.6),
+      bold: true,
+    );
+  }
 
-      final reqColor = d.requirement.color == null
-          ? const Color(0xFF8A94A6)
-          : packageColors[d.requirement.color!];
-      // Colored header band.
+  void _renderDocks(Canvas c, BoardLayout l) {
+    for (var i = 0; i < l.dockRects.length; i++) {
+      final r = l.dockRects[i];
+      _paint.color = game.skin.onBackground.withValues(alpha: 0.06);
+      c.drawRRect(RRect.fromRectXY(r.inflate(2), 14, 14), _paint);
+      final t = _docks[i];
+      if (t != null) {
+        final dx = -t.arrive * t.arrive * (r.left + r.width);
+        c.save();
+        c.translate(dx, 0);
+        _painter.drawTruck(
+          c,
+          r,
+          t.color,
+          t.capacity,
+          t.filled,
+          bounce: t.bounce,
+          wheelSpin: t.arrive * 12,
+        );
+        c.restore();
+      }
+    }
+    for (final d in _departing) {
+      final r = l.dockRects[d.dock];
+      final k = d.t / _Departing.duration;
+      final dx = k * k * (size.x - r.left + 40);
       c.save();
-      c.clipRRect(rr);
-      _paint.color = reqColor.withValues(alpha: 0.18);
-      c.drawRect(
-        Rect.fromLTWH(r.left, r.top, r.width, r.height * 0.62),
-        _paint,
+      c.translate(dx, -math.sin(k * math.pi) * 6);
+      _painter.drawTruck(
+        c,
+        r,
+        d.truck.color,
+        d.truck.capacity,
+        d.truck.capacity,
+        wheelSpin: d.t * 30,
       );
       c.restore();
-      _stroke
-        ..color = reqColor
-        ..strokeWidth = 3;
-      c.drawRRect(rr, _stroke);
-
-      final badge = math.min(r.width * 0.42, r.height * 0.36);
-      _painter.drawRequirement(
-        c,
-        d.requirement,
-        Offset(r.center.dx, r.top + r.height * 0.31),
-        badge,
-      );
-
-      // Capacity cells.
-      final cellsW = r.width * 0.8;
-      final gap = 3.0;
-      final cw = (cellsW - gap * (d.capacity - 1)) / d.capacity;
-      final ch = math.min(cw, r.height * 0.14);
-      final cy = r.top + r.height * 0.7;
-      for (var k = 0; k < d.capacity; k++) {
-        final cell = Rect.fromLTWH(
-          r.left + r.width * 0.1 + k * (cw + gap),
-          cy,
-          cw,
-          ch,
-        );
-        _paint.color = k < d.filled ? reqColor : const Color(0xFFE3E7ED);
-        c.drawRRect(RRect.fromRectXY(cell, 4, 4), _paint);
-      }
-
-      // Next truck preview.
-      final nextSize = math.min(r.width * 0.2, 22.0);
-      final nextCenter = Offset(
-        r.right - nextSize * 0.8,
-        r.bottom - nextSize * 0.75,
-      );
-      _text(
-        c,
-        'NEXT',
-        nextCenter.translate(-nextSize * 1.25, 0),
-        9,
-        const Color(0xFF8A94A6),
-        bold: true,
-      );
-      _painter.drawRequirement(c, d.next, nextCenter, nextSize);
-
-      final flash = _dockFlash[i];
-      if (flash != null) {
-        final ok = flash > 0;
-        _paint.color = (ok ? AppColors.success : AppColors.danger).withValues(
-          alpha: (flash.abs() / 0.4) * 0.45,
-        );
-        c.drawRRect(rr, _paint);
-      }
-      if (hint?.$2 == DockTarget(i)) _pulseOutline(c, r);
     }
   }
 
-  void _pulseOutline(Canvas c, Rect r) {
-    final pulse = 0.5 + 0.5 * math.sin(_time * 8);
-    _outline(
+  void _renderShelf(Canvas c, BoardLayout l) {
+    final cap = s.shelfCapacity;
+    final danger = _shelf.length >= cap - 1;
+    final r = l.shelfRect;
+    final visibleSlots = math.min(cap, l.shelfSlotRects.length);
+    final last = l.shelfSlotRects[visibleSlots - 1];
+    final board = Rect.fromLTRB(r.left, r.top, last.right + 8, r.bottom);
+    final pulse = danger ? 0.5 + 0.5 * math.sin(_time * 8) : 0.0;
+    _paint.color = (danger ? AppColors.danger : const Color(0xFF8A6A4A))
+        .withValues(alpha: 0.12 + 0.1 * pulse);
+    c.drawRRect(RRect.fromRectXY(board, 12, 12), _paint);
+    _text(
       c,
-      r.inflate(3 + pulse * 3),
-      AppColors.coin.withValues(alpha: 0.6 + 0.4 * pulse),
-      4,
+      '棚',
+      Offset(board.left - 0, board.top - 8),
+      11,
+      game.skin.onBackground.withValues(alpha: 0.6),
+      bold: true,
     );
-  }
-
-  void _outline(Canvas c, Rect r, Color color, double width) {
-    _stroke
-      ..color = color
-      ..strokeWidth = width;
-    c.drawRRect(RRect.fromRectXY(r, 14, 14), _stroke);
-  }
-
-  void _dashed(Canvas c, Rect r, Color color) {
-    _stroke
-      ..color = color
-      ..strokeWidth = 2;
-    const dash = 6.0;
-    void line(Offset a, Offset b) {
-      final len = (b - a).distance;
-      final dir = (b - a) / len;
-      for (var d = 0.0; d < len; d += dash * 2) {
-        c.drawLine(a + dir * d, a + dir * math.min(len, d + dash), _stroke);
+    for (var i = 0; i < visibleSlots; i++) {
+      final sr = l.shelfSlotRects[i];
+      _stroke
+        ..color = (danger ? AppColors.danger : game.skin.onBackground)
+            .withValues(alpha: 0.25)
+        ..strokeWidth = 2;
+      c.drawRRect(RRect.fromRectXY(sr, 8, 8), _stroke);
+      if (i < _shelf.length) {
+        _painter.drawBox(c, _shelf[i].color, sr.center, sr.width * 0.86);
       }
     }
+  }
 
-    final i = r.deflate(4);
-    line(i.topLeft, i.topRight);
-    line(i.topRight, i.bottomRight);
-    line(i.bottomRight, i.bottomLeft);
-    line(i.bottomLeft, i.topLeft);
+  void _renderLanes(Canvas c, BoardLayout l) {
+    for (var i = 0; i < _lanes.length; i++) {
+      final r = l.laneRects[i];
+      final locked = s.isLocked(i);
+      _paint.color = game.skin.belt.withValues(alpha: locked ? 0.35 : 0.9);
+      c.drawRRect(RRect.fromRectXY(r, 14, 14), _paint);
+      // Conveyor stripes.
+      c.save();
+      c.clipRRect(RRect.fromRectXY(r, 14, 14));
+      _paint.color = Colors.white.withValues(alpha: 0.05);
+      for (var y = r.top; y < r.bottom; y += 22) {
+        c.drawRect(Rect.fromLTWH(r.left, y, r.width, 8), _paint);
+      }
+      c.restore();
+
+      final lane = _lanes[i];
+      final maxVisible = ((r.height - l.pkgSize * 0.2) / l.pkgStep).floor();
+      for (var k = math.min(lane.length, maxVisible) - 1; k >= 0; k--) {
+        final b = lane[k];
+        final ctr = l.packageCenter(i, k);
+        final isFront = k == 0;
+        final alpha = locked ? 0.45 : (isFront ? 1.0 : 0.92);
+        final willLoad =
+            isFront && !locked && s.dockFor(b.color) != null && isIdle;
+        final sizeK = isFront ? 1.0 : 0.94;
+        if (b.reveal > 0) {
+          final sx = (b.reveal - 0.5).abs() * 2;
+          c.save();
+          c.translate(ctr.dx, ctr.dy);
+          c.scale(math.max(0.05, sx), 1);
+          _painter.drawBox(
+            c,
+            b.color,
+            Offset.zero,
+            l.pkgSize,
+            hidden: b.reveal > 0.5,
+          );
+          c.restore();
+        } else {
+          _painter.drawBox(
+            c,
+            b.color,
+            ctr,
+            l.pkgSize * sizeK,
+            hidden: b.hidden,
+            alpha: alpha,
+            glow: willLoad,
+            squash: willLoad ? 0.25 * (0.5 + 0.5 * math.sin(_time * 5 + i)) : 0,
+          );
+        }
+      }
+      if (lane.length > maxVisible) {
+        _text(
+          c,
+          '+${lane.length - maxVisible}',
+          Offset(r.center.dx, r.bottom - 10),
+          12,
+          Colors.white,
+          bold: true,
+        );
+      }
+      if (locked) {
+        _lock(c, r.center, l.pkgSize * 0.7);
+        _text(
+          c,
+          '${s.unlockIn(i)}',
+          r.center.translate(0, l.pkgSize * 0.6),
+          18,
+          Colors.white,
+          bold: true,
+          outline: true,
+        );
+      }
+      if (hintLane == i) {
+        final pulse = 0.5 + 0.5 * math.sin(_time * 8);
+        _stroke
+          ..color = AppColors.coin.withValues(alpha: 0.6 + 0.4 * pulse)
+          ..strokeWidth = 4;
+        c.drawRRect(
+          RRect.fromRectXY(r.inflate(3 + pulse * 3), 16, 16),
+          _stroke,
+        );
+      }
+    }
+  }
+
+  void _lock(Canvas c, Offset center, double size) {
+    _paint.color = const Color(0xFFF2C94C);
+    final body = Rect.fromCenter(
+      center: center.translate(0, size * 0.15),
+      width: size * 0.8,
+      height: size * 0.6,
+    );
+    c.drawRRect(RRect.fromRectXY(body, 6, 6), _paint);
+    _stroke
+      ..color = const Color(0xFFF2C94C)
+      ..strokeWidth = size * 0.12;
+    c.drawArc(
+      Rect.fromCenter(
+        center: center.translate(0, -size * 0.12),
+        width: size * 0.5,
+        height: size * 0.6,
+      ),
+      math.pi,
+      math.pi,
+      false,
+      _stroke,
+    );
   }
 
   final Map<String, TextPainter> _textCache = {};
@@ -669,22 +732,24 @@ class BoardComponent extends PositionComponent
     bool bold = false,
     bool outline = false,
   }) {
-    final key = '$text|$size|${color.toARGB32()}|$bold|$outline';
+    final key =
+        '$text|${size.toStringAsFixed(1)}|${color.toARGB32()}|$bold|$outline';
     var tp = _textCache[key];
     if (tp == null) {
-      if (_textCache.length > 300) _textCache.clear();
+      if (_textCache.length > 400) _textCache.clear();
       tp = TextPainter(
         text: TextSpan(
           text: text,
           style: TextStyle(
             fontSize: size,
             color: color,
-            fontWeight: bold ? FontWeight.w800 : FontWeight.w500,
+            fontWeight: bold ? FontWeight.w900 : FontWeight.w500,
             shadows: outline
                 ? [
                     Shadow(
-                      color: Colors.black.withValues(alpha: color.a * 0.5),
-                      blurRadius: 3,
+                      color: Colors.black.withValues(alpha: color.a * 0.45),
+                      blurRadius: 4,
+                      offset: const Offset(0, 2),
                     ),
                   ]
                 : null,

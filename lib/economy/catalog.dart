@@ -4,7 +4,7 @@
 /// remote config without code changes elsewhere.
 library;
 
-enum UpgradeEffect { beltCapacity, bufferSlots, coinBonus }
+enum UpgradeEffect { shelfSlots, freeUndo, coinBonus }
 
 class UpgradeDef {
   const UpgradeDef({
@@ -31,18 +31,18 @@ class UpgradeDef {
 
 const upgradeDefs = [
   UpgradeDef(
-    id: 'conveyor',
-    name: 'コンベア設備',
-    description: 'ベルトの長さ +1（詰まりにくくなる）',
-    effect: UpgradeEffect.beltCapacity,
+    id: 'manual',
+    name: '作業マニュアル',
+    description: '無料の「1手戻す」 +1回／ステージ',
+    effect: UpgradeEffect.freeUndo,
     costs: [200, 500],
   ),
   UpgradeDef(
-    id: 'sorter',
-    name: '仕分け設備',
-    description: '一時保管スロット +1（保管エリアがあるステージ）',
-    effect: UpgradeEffect.bufferSlots,
-    costs: [450],
+    id: 'shelf',
+    name: '棚の増設',
+    description: '棚のスロット +1（全ステージ）',
+    effect: UpgradeEffect.shelfSlots,
+    costs: [600],
   ),
   UpgradeDef(
     id: 'center',
@@ -224,7 +224,7 @@ CosmeticDef? cosmeticById(String id) {
   return null;
 }
 
-enum MissionKind { clears, maxCombo, timedDeliveries, totalScore, deliveries }
+enum MissionKind { clears, maxChain, perfectClears, totalScore, deliveries }
 
 class MissionDef {
   const MissionDef(
@@ -244,9 +244,9 @@ class MissionDef {
 const missionPool = [
   MissionDef('clear_3', MissionKind.clears, 3, 'ステージを3回クリア'),
   MissionDef('clear_5', MissionKind.clears, 5, 'ステージを5回クリア', reward: 60),
-  MissionDef('combo_10', MissionKind.maxCombo, 10, '連続正解を10回達成'),
-  MissionDef('combo_15', MissionKind.maxCombo, 15, '連続正解を15回達成', reward: 60),
-  MissionDef('timed_5', MissionKind.timedDeliveries, 5, 'お急ぎ便を5個配送'),
-  MissionDef('score_15000', MissionKind.totalScore, 15000, '累計スコア15,000'),
-  MissionDef('deliver_60', MissionKind.deliveries, 60, '荷物を60個配送'),
+  MissionDef('chain_2', MissionKind.maxChain, 2, '2連鎖出荷を達成'),
+  MissionDef('chain_3', MissionKind.maxChain, 3, '3連鎖出荷を達成', reward: 60),
+  MissionDef('perfect_2', MissionKind.perfectClears, 2, '★3クリアを2回'),
+  MissionDef('score_5000', MissionKind.totalScore, 5000, '累計スコア5,000'),
+  MissionDef('deliver_80', MissionKind.deliveries, 80, '荷物を80個出荷'),
 ];

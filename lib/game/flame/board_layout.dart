@@ -1,80 +1,93 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
-/// Computes screen rectangles for the board. Pure, so it can be tested on
-/// many screen sizes to make sure nothing overlaps or leaves the screen.
+/// Screen rectangles for the puzzle board. Pure, so it can be tested on many
+/// screen sizes to ensure nothing overlaps or leaves the screen.
+///
+/// ```
+///  NEXT ▭▭▭▭           (truck queue)
+///  [truck][truck][truck] (docks)
+///  [□][□][□][□][□]      (shelf)
+///  |■| |■| |■| |■|       (lanes; front package on top)
+///  |■| |■| |■| |■|
+/// ```
 class BoardLayout {
   BoardLayout({
     required Size size,
+    required int lanes,
+    required int maxDepth,
     required int docks,
-    required int beltCapacity,
-    required int bufferSlots,
+    required int shelfSlots,
   }) {
     final w = size.width, h = size.height;
-    final pad = math.max(8.0, w * 0.03);
+    pad = math.max(8.0, w * 0.025);
 
-    // Docks along the bottom.
-    final dockH = math.min(h * 0.24, math.max(96.0, w * 0.36));
+    queueRect = Rect.fromLTWH(pad, pad * 0.5, w - pad * 2, 26);
+
+    final dockTop = queueRect.bottom + pad * 0.5;
     final dockW = (w - pad * (docks + 1)) / docks;
-    final dockTop = h - pad - dockH;
+    final dockH = math.min(math.min(h * 0.17, 112.0), dockW * 0.75);
     dockRects = [
       for (var i = 0; i < docks; i++)
         Rect.fromLTWH(pad + i * (dockW + pad), dockTop, dockW, dockH),
     ];
 
-    // Belt: vertical, centered, ending just above the docks.
-    final beltBottom = dockTop - pad * 1.5;
-    final available = beltBottom - pad;
-    pkgSize = math.min(w * 0.17, available / (beltCapacity * 1.15 + 0.6));
-    spacing = pkgSize * 1.15;
-    final beltW = pkgSize * 1.45;
-    final beltH = spacing * beltCapacity + pkgSize * 0.5;
-    beltRect = Rect.fromLTWH((w - beltW) / 2, beltBottom - beltH, beltW, beltH);
-    frontCenter = Offset(w / 2, beltBottom - pkgSize * 0.65);
-
-    // Side zones next to the front of the belt.
-    final sideW = beltRect.left - pad * 2;
-    // Keep touch targets >= 48 logical px even on very small screens.
-    final slot = math.min(sideW, math.max(48.0, pkgSize * 1.35));
-    bufferRects = [
-      for (var i = 0; i < bufferSlots; i++)
+    final slots = math.max(shelfSlots, 1);
+    final slot = math.min(math.min((w - pad * 2) / slots - 6, 54.0), h * 0.08);
+    final shelfW = slots * (slot + 6) - 6;
+    final shelfTop = dockTop + dockH + pad * 1.4;
+    shelfRect = Rect.fromLTWH(
+      (w - shelfW) / 2 - 8,
+      shelfTop,
+      shelfW + 16,
+      slot + 16,
+    );
+    shelfSlotRects = [
+      for (var i = 0; i < slots; i++)
         Rect.fromLTWH(
-          beltRect.left - pad - slot,
-          beltBottom - slot - i * (slot + pad * 0.8),
+          shelfRect.left + 8 + i * (slot + 6),
+          shelfTop + 8,
           slot,
           slot,
         ),
     ];
-    chuteRect = Rect.fromLTWH(
-      beltRect.right + pad,
-      beltBottom - slot,
-      slot,
-      slot,
+
+    final laneTop = shelfRect.bottom + pad * 1.4;
+    final laneW = (w - pad * (lanes + 1)) / lanes;
+    final laneH = h - laneTop - pad;
+    laneRects = [
+      for (var i = 0; i < lanes; i++)
+        Rect.fromLTWH(pad + i * (laneW + pad), laneTop, laneW, laneH),
+    ];
+    final depth = math.max(maxDepth, 1);
+    pkgSize = math.min(
+      math.min(laneW * 0.8, 62.0),
+      (laneH - pad) / (depth * 1.08 + 0.1),
     );
+    pkgStep = pkgSize * 1.08;
   }
 
+  late final double pad;
+  late final Rect queueRect;
   late final List<Rect> dockRects;
-  late final List<Rect> bufferRects;
-  late final Rect chuteRect;
-  late final Rect beltRect;
-  late final Offset frontCenter;
+  late final Rect shelfRect;
+  late final List<Rect> shelfSlotRects;
+  late final List<Rect> laneRects;
   late final double pkgSize;
-  late final double spacing;
+  late final double pkgStep;
 
-  Offset beltPosition(double pos) =>
-      Offset(frontCenter.dx, frontCenter.dy - pos * spacing);
+  /// Center of the package at [index] (0 = front) in [lane].
+  Offset packageCenter(int lane, int index) {
+    final r = laneRects[lane];
+    return Offset(r.center.dx, r.top + pkgSize * 0.62 + index * pkgStep);
+  }
 
-  Rect get frontRect => Rect.fromCenter(
-    center: frontCenter,
-    width: pkgSize * 1.5,
-    height: pkgSize * 1.5,
-  );
+  int? laneAt(Offset p) {
+    for (var i = 0; i < laneRects.length; i++) {
+      if (laneRects[i].inflate(pad / 2).contains(p)) return i;
+    }
+    return null;
+  }
 
-  /// All interactive rects, for overlap tests.
-  List<Rect> get interactive => [
-    ...dockRects,
-    ...bufferRects,
-    chuteRect,
-    frontRect,
-  ];
+  List<Rect> get all => [...dockRects, shelfRect, ...laneRects];
 }

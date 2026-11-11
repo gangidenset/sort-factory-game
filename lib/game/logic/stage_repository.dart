@@ -16,10 +16,10 @@ class StageCatalog {
 
   factory StageCatalog.fromJsonString(String source) {
     final root = jsonDecode(source) as Map<String, dynamic>;
-    final list = (root['stages'] as List)
-        .map((e) => StageConfig.fromJson(e as Map<String, dynamic>))
-        .toList();
-    return StageCatalog(list);
+    return StageCatalog([
+      for (final e in root['stages'] as List)
+        StageConfig.fromJson(e as Map<String, dynamic>),
+    ]);
   }
 
   int get length => stages.length;
@@ -31,7 +31,6 @@ class StageCatalog {
     return null;
   }
 
-  /// The stage after [id], or null if [id] is the last one.
   StageConfig? nextOf(int id) {
     final i = stages.indexWhere((s) => s.id == id);
     if (i < 0 || i + 1 >= stages.length) return null;
