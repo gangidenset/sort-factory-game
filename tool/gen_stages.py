@@ -1,307 +1,363 @@
 #!/usr/bin/env python3
-"""Generates assets/stages/stages.json for the turn-based sorting puzzle.
+"""Generates assets/stages/stages.json for the deduction puzzle.
 
-For each stage spec it creates random layouts, keeps only layouts that are
-solvable, computes `par` (fewest shelf placements of a perfect solution, by
-0-1 BFS) and estimates difficulty by letting a "greedy-random" player (sends
-to a truck when possible, otherwise taps a random lane) play 200 times. The
-candidate whose win rate is closest to the spec's target is written out.
+Puzzle ("loading logic"): an n x n warehouse floor with trucks on it.
+Place boxes so that
+  1. every truck gets exactly one box on an orthogonally adjacent cell
+     (one box per truck, one truck per box),
+  2. no two boxes touch, not even diagonally,
+  3. each row / column holds exactly the number of boxes shown on its edge.
 
-Rules here MUST mirror lib/game/logic/game_session.dart; the Dart test
-test/game/stage_catalog_test.dart re-verifies solvability and par.
+For every stage this script
+  * builds a random solution and derives the clues,
+  * proves the solution is UNIQUE (exhaustive backtracking + matching),
+  * solves it with human-style deduction rules and records the hardest rule
+    tier needed (1 = counting, 2 = line patterns, 3 = "what if" look-ahead),
+  * keeps the puzzle only if its tier matches the stage spec.
+No stage ever requires guessing.
+
+The rule tiers mirror lib/game/logic/deduction.dart (used for hints).
 
     python3 tool/gen_stages.py
 """
-import collections, json, os, random
+import itertools, json, os, random
 
-# --------------------------------------------------------------------------
-# Rules (mirror of GameSession)
+ORTH = ((-1, 0), (1, 0), (0, -1), (0, 1))
+ALL8 = tuple((dr, dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if dr or dc)
 
-class Sim:
-    __slots__ = ('lanes', 'ptr', 'docks', 'shelf', 'qi', 'trucks', 'cap',
-                 'shipped', 'placements', 'locks', 'status')
 
-    def __init__(self, st):
-        self.lanes = st['lanes']
-        self.ptr = [0] * len(self.lanes)
-        self.trucks = st['trucks_full']  # list of (color, capacity)
-        self.qi = 0
-        self.docks = []
-        for _ in range(st['docks']):
-            self.docks.append(self._next())
-        self.shelf = []
-        self.cap = st['shelf']
-        self.shipped = 0
-        self.placements = 0
-        self.locks = st.get('locks', [])
-        self.status = 'playing'
+class Contradiction(Exception):
+    pass
+
+
+class State:
+    def __init__(self, n, trucks, rows, cols):
+        self.n = n
+        self.trucks = list(trucks)
+        self.truck_set = set(trucks)
+        self.rows = rows
+        self.cols = cols
+        self.boxes = set()
+        self.cross = set()
 
     def copy(self):
-        o = Sim.__new__(Sim)
-        o.lanes = self.lanes
-        o.ptr = list(self.ptr)
-        o.trucks = self.trucks
-        o.qi = self.qi
-        o.docks = [None if d is None else list(d) for d in self.docks]
-        o.shelf = list(self.shelf)
-        o.cap = self.cap
-        o.shipped = self.shipped
-        o.placements = self.placements
-        o.locks = self.locks
-        o.status = self.status
-        return o
+        s = State(self.n, self.trucks, self.rows, self.cols)
+        s.boxes = set(self.boxes)
+        s.cross = set(self.cross)
+        return s
 
-    def _next(self):
-        if self.qi >= len(self.trucks):
-            return None
-        c, k = self.trucks[self.qi]
-        self.qi += 1
-        return [c, k, 0]  # color, capacity, filled
+    def inside(self, r, c):
+        return 0 <= r < self.n and 0 <= c < self.n
 
-    def locked(self, lane):
-        return any(l['lane'] == lane and self.shipped < l['after'] for l in self.locks)
+    def row_count(self, r):
+        return sum(1 for b in self.boxes if b[0] == r)
 
-    def can_tap(self, lane):
-        return (self.status == 'playing' and self.ptr[lane] < len(self.lanes[lane])
-                and not self.locked(lane))
+    def col_count(self, c):
+        return sum(1 for b in self.boxes if b[1] == c)
 
-    def dock_for(self, color):
-        best = None
-        for i, d in enumerate(self.docks):
-            if d is None or d[0] != color or d[2] >= d[1]:
-                continue
-            if best is None or d[2] > self.docks[best][2]:
-                best = i
-        return best
+    def is_candidate(self, cell):
+        r, c = cell
+        if not self.inside(r, c):
+            return False
+        if cell in self.truck_set or cell in self.boxes or cell in self.cross:
+            return False
+        if not any((r + dr, c + dc) in self.truck_set for dr, dc in ORTH):
+            return False
+        if any((r + dr, c + dc) in self.boxes for dr, dc in ALL8):
+            return False
+        if self.row_count(r) >= self.rows[r] or self.col_count(c) >= self.cols[c]:
+            return False
+        return True
 
-    def front(self, lane):
-        return self.lanes[lane][self.ptr[lane]]
+    def candidates(self):
+        return [(r, c) for r in range(self.n) for c in range(self.n)
+                if self.is_candidate((r, c))]
 
-    def tap(self, lane):
-        c = self.front(lane)
-        self.ptr[lane] += 1
-        d = self.dock_for(c)
-        if d is not None:
-            self.docks[d][2] += 1
-            self._resolve()
-        elif len(self.shelf) < self.cap:
-            self.shelf.append(c)
-            self.placements += 1
-        else:
-            self.status = 'failed'
-            return
-        self._check_end()
+    def line_cells(self, kind, i):
+        return [(i, k) if kind == 'r' else (k, i) for k in range(self.n)]
 
-    def _resolve(self):
-        while True:
-            full = next((i for i, d in enumerate(self.docks)
-                         if d is not None and d[2] >= d[1]), -1)
-            if full < 0:
-                break
-            self.shipped += 1
-            self.docks[full] = self._next()
-            i = 0
-            while i < len(self.shelf):
-                d = self.dock_for(self.shelf[i])
-                if d is None:
-                    i += 1
+    def need(self, kind, i):
+        return (self.rows[i] - self.row_count(i)) if kind == 'r' else (self.cols[i] - self.col_count(i))
+
+    def line_options(self, kind, i):
+        """All ways to place the missing boxes of a line on its candidates
+        without two of them being neighbours in the line."""
+        need = self.need(kind, i)
+        cands = [x for x in self.line_cells(kind, i) if self.is_candidate(x)]
+        pos = 1 if kind == 'r' else 0
+        out = []
+        for combo in itertools.combinations(cands, need):
+            if all(abs(a[pos] - b[pos]) > 1 for a, b in zip(combo, combo[1:])):
+                out.append(combo)
+        return cands, out
+
+    def check(self):
+        for kind in 'rc':
+            for i in range(self.n):
+                need = self.need(kind, i)
+                if need < 0:
+                    raise Contradiction
+                if need > 0 and not self.line_options(kind, i)[1]:
+                    raise Contradiction
+        for t in self.trucks:
+            adj = [(t[0] + dr, t[1] + dc) for dr, dc in ORTH]
+            if not any(a in self.boxes for a in adj) and not any(self.is_candidate(a) for a in adj):
+                raise Contradiction
+        for b in self.boxes:
+            if any((b[0] + dr, b[1] + dc) in self.boxes for dr, dc in ALL8):
+                raise Contradiction
+        if not has_matching(self.trucks, self.boxes, partial=True):
+            raise Contradiction
+
+    # ---- deduction rules; each returns (cell, is_box) or None -------------
+    def rule_tier1(self):
+        # Counting: a line whose remaining candidates all must be boxes.
+        for kind in 'rc':
+            for i in range(self.n):
+                need = self.need(kind, i)
+                if need <= 0:
                     continue
-                self.shelf.pop(i)
-                self.docks[d][2] += 1
-
-    def _check_end(self):
-        if all(d is None for d in self.docks) and self.qi >= len(self.trucks):
-            self.status = 'cleared'
-            return
-        if not any(self.can_tap(i) for i in range(len(self.lanes))):
-            self.status = 'failed'
-
-    def key(self):
-        docks = sorted('-' if d is None else '%d%d' % (d[0], d[2]) for d in self.docks)
-        return (tuple(self.ptr), tuple(sorted(self.shelf)), tuple(docks), self.qi)
-
-    def moves(self):
-        return [i for i in range(len(self.lanes)) if self.can_tap(i)]
-
-
-def par_of(st, limit=400000):
-    """Fewest shelf placements to clear (0-1 BFS). None if unsolvable."""
-    start = Sim(st)
-    start_key = start.key()
-    best = {start_key: 0}
-    dq = collections.deque([(0, start)])
-    seen = 0
-    while dq:
-        cost, s = dq.popleft()
-        if cost > best.get(s.key(), 1 << 30):
-            continue
-        seen += 1
-        if seen > limit:
-            return None
-        for m in s.moves():
-            n = s.copy()
-            n.tap(m)
-            if n.status == 'failed':
+                cands = [x for x in self.line_cells(kind, i) if self.is_candidate(x)]
+                if len(cands) == need:
+                    return cands[0], True
+        # A truck with no box yet and a single free neighbour.
+        for t in self.trucks:
+            adj = [(t[0] + dr, t[1] + dc) for dr, dc in ORTH]
+            if any(a in self.boxes for a in adj):
                 continue
-            if n.status == 'cleared':
-                return n.placements  # first clear popped in cost order
-            k = n.key()
-            if n.placements < best.get(k, 1 << 30):
-                best[k] = n.placements
-                if n.placements == cost:
-                    dq.appendleft((cost, n))
-                else:
-                    dq.append((n.placements, n))
-    return None
+            free = [a for a in adj if self.inside(*a) and self.is_candidate(a)]
+            if len(free) == 1:
+                return free[0], True
+        return None
+
+    def rule_tier2(self):
+        # Line patterns: cells used by every / no arrangement of a line.
+        for kind in 'rc':
+            for i in range(self.n):
+                if self.need(kind, i) <= 0:
+                    continue
+                cands, opts = self.line_options(kind, i)
+                if not opts:
+                    continue
+                for cell in cands:
+                    uses = sum(1 for o in opts if cell in o)
+                    if uses == len(opts):
+                        return cell, True
+                    if uses == 0:
+                        return cell, False
+        return None
+
+    def propagate(self, max_tier):
+        """Applies rules up to max_tier until stuck. Returns highest tier used."""
+        used = 0
+        while True:
+            self.check()
+            move = self.rule_tier1()
+            tier = 1
+            if move is None and max_tier >= 2:
+                move = self.rule_tier2()
+                tier = 2
+            if move is None:
+                return used
+            cell, is_box = move
+            (self.boxes if is_box else self.cross).add(cell)
+            used = max(used, tier)
+
+    def rule_tier3(self):
+        # "What if": assume a cell, follow tier 1-2 consequences, find a clash.
+        for cell in self.candidates():
+            for assume_box in (True, False):
+                t = self.copy()
+                (t.boxes if assume_box else t.cross).add(cell)
+                try:
+                    t.propagate(2)
+                except Contradiction:
+                    return cell, not assume_box
+        return None
 
 
-def greedy_random_rate(st, runs=200, seed=0):
-    rng = random.Random(seed)
-    wins = 0
-    for _ in range(runs):
-        s = Sim(st)
-        while s.status == 'playing':
-            ms = s.moves()
-            direct = [m for m in ms if s.dock_for(s.front(m)) is not None]
-            s.tap(rng.choice(direct or ms))
-        wins += s.status == 'cleared'
-    return wins / runs
+def has_matching(trucks, boxes, partial=False):
+    """Perfect matching trucks<->boxes (partial: every box gets own truck)."""
+    boxes = list(boxes)
+    if not partial and len(boxes) != len(trucks):
+        return False
+    tset = {t: i for i, t in enumerate(trucks)}
+    adj = [[tset[(b[0] + dr, b[1] + dc)] for dr, dc in ORTH if (b[0] + dr, b[1] + dc) in tset]
+           for b in boxes]
+    match = {}
 
-# --------------------------------------------------------------------------
-# Generation
+    def try_box(i, seen):
+        for t in adj[i]:
+            if t in seen:
+                continue
+            seen.add(t)
+            if t not in match or try_box(match[t], seen):
+                match[t] = i
+                return True
+        return False
 
-def make_layout(rng, spec):
-    colors = spec['colors']
-    cap = spec.get('cap', 3)
-    trucks = []
-    per_color = spec['trucks'] // len(colors)
-    extra = spec['trucks'] - per_color * len(colors)
-    for i, c in enumerate(colors):
-        trucks += [c] * (per_color + (1 if i < extra else 0))
-    rng.shuffle(trucks)
-    # Avoid long runs of the same color in the queue (boring).
-    for _ in range(50):
-        bad = [i for i in range(1, len(trucks)) if trucks[i] == trucks[i - 1]]
-        if not bad:
+    return all(try_box(i, set()) for i in range(len(boxes)))
+
+
+def logical_tier(n, trucks, rows, cols, solution):
+    """Hardest rule tier needed (1-3), or None if deduction gets stuck."""
+    s = State(n, trucks, rows, cols)
+    top = 0
+    try:
+        while True:
+            top = max(top, s.propagate(2))
+            if s.boxes == solution:
+                return max(top, 1)
+            move = s.rule_tier3()
+            if move is None:
+                return None
+            cell, is_box = move
+            (s.boxes if is_box else s.cross).add(cell)
+            top = 3
+    except Contradiction:
+        return None
+
+
+def count_solutions(n, trucks, rows, cols, limit=2):
+    truck_set = set(trucks)
+    cells = [(r, c) for r in range(n) for c in range(n)
+             if (r, c) not in truck_set and any((r + dr, c + dc) in truck_set for dr, dc in ORTH)]
+    rc = [0] * n
+    cc = [0] * n
+    boxes = set()
+    found = [0]
+    # Candidate cells remaining per row from index i (for pruning).
+    remaining_in_row = [[0] * n for _ in range(len(cells) + 1)]
+    for i in range(len(cells) - 1, -1, -1):
+        remaining_in_row[i] = list(remaining_in_row[i + 1])
+        remaining_in_row[i][cells[i][0]] += 1
+
+    def rec(i):
+        if found[0] >= limit:
+            return
+        if any(rc[r] + remaining_in_row[i][r] < rows[r] for r in range(n)):
+            return
+        if i == len(cells):
+            if rc == rows and cc == cols and has_matching(trucks, boxes):
+                found[0] += 1
+            return
+        r, c = cells[i]
+        if rc[r] < rows[r] and cc[c] < cols[c] and not any(
+                (r + dr, c + dc) in boxes for dr, dc in ALL8):
+            boxes.add((r, c)); rc[r] += 1; cc[c] += 1
+            rec(i + 1)
+            boxes.discard((r, c)); rc[r] -= 1; cc[c] -= 1
+        rec(i + 1)
+
+    rec(0)
+    return found[0]
+
+
+def random_puzzle(rng, n, k):
+    boxes, trucks = [], []
+    cells = [(r, c) for r in range(n) for c in range(n)]
+    rng.shuffle(cells)
+    for cell in cells:
+        if len(boxes) == k:
             break
-        i = rng.choice(bad)
-        j = rng.randrange(len(trucks))
-        trucks[i], trucks[j] = trucks[j], trucks[i]
-    pkgs = [c for c in trucks for _ in range(cap)]
-    rng.shuffle(pkgs)
-    n = spec['lanes']
-    lanes = [[] for _ in range(n)]
-    # Uneven lane lengths look more natural.
-    for i, c in enumerate(pkgs):
-        lanes[rng.randrange(n) if rng.random() < 0.35 else i % n].append(c)
-    lanes = [l for l in lanes if l] 
-    st = dict(lanes=lanes, trucks=trucks, trucks_full=[(c, cap) for c in trucks],
-              docks=spec['docks'], shelf=spec['shelf'], truckCapacity=cap)
-    hidden = []
-    for li, l in enumerate(lanes):
-        for idx in range(1, len(l)):
-            if rng.random() < spec.get('hidden', 0):
-                hidden.append([li, idx])
-    if hidden:
-        st['hidden'] = hidden
-    if spec.get('locks'):
-        locks = []
-        for k in range(spec['locks']):
-            locks.append({'lane': len(lanes) - 1 - k, 'after': spec.get('lockAfter', 2) + k * 2})
-        st['locks'] = locks
-    return st
+        r, c = cell
+        if cell in trucks or any((r + dr, c + dc) in boxes for dr, dc in ALL8) or cell in boxes:
+            continue
+        spots = [(r + dr, c + dc) for dr, dc in ORTH
+                 if 0 <= r + dr < n and 0 <= c + dc < n
+                 and (r + dr, c + dc) not in boxes and (r + dr, c + dc) not in trucks]
+        # A truck cell must not be where a later box would need to sit; fine.
+        if not spots:
+            continue
+        boxes.append(cell)
+        trucks.append(rng.choice(spots))
+    if len(boxes) < k:
+        return None
+    rows = [sum(1 for b in boxes if b[0] == r) for r in range(n)]
+    cols = [sum(1 for b in boxes if b[1] == c) for c in range(n)]
+    return trucks, boxes, rows, cols
+
+
+E, N, H = 'easy', 'normal', 'hard'
+# size, boxes, required tier
+SPECS = [
+    dict(name='はじめての積み込み', d=E, n=4, k=3, tier=1, tutorial='basic'),
+    dict(name='数字をよむ', d=E, n=4, k=4, tier=1, tutorial='count'),
+    dict(name='となりあわない', d=E, n=5, k=5, tier=1, tutorial='touch'),
+    dict(name='小さな倉庫', d=E, n=5, k=5, tier=1),
+    dict(name='朝の便', d=E, n=5, k=6, tier=1),
+    dict(name='6マス倉庫', d=E, n=6, k=7, tier=1),
+    dict(name='ゼロの列', d=E, n=6, k=7, tier=1),
+    dict(name='はじめての決め手', d=E, n=5, k=6, tier=2, tutorial='pattern'),
+    dict(name='昼の便', d=E, n=6, k=8, tier=2),
+    dict(name='新人卒業', d=E, n=6, k=8, tier=2),
+    dict(name='ひろい倉庫', d=N, n=7, k=10, tier=2),
+    dict(name='ならびを読む', d=N, n=7, k=10, tier=2),
+    dict(name='夕方の便', d=N, n=7, k=11, tier=2),
+    dict(name='もしもの推理', d=N, n=6, k=8, tier=3, tutorial='whatif'),
+    dict(name='混雑ドック', d=N, n=7, k=11, tier=2),
+    dict(name='二択のわな', d=N, n=6, k=8, tier=3),
+    dict(name='雨の日の便', d=N, n=7, k=10, tier=3),
+    dict(name='8マス倉庫', d=N, n=8, k=13, tier=2),
+    dict(name='夜の便', d=N, n=7, k=11, tier=3),
+    dict(name='中堅昇格', d=N, n=8, k=13, tier=2),
+    dict(name='大倉庫', d=H, n=8, k=13, tier=3, tutorial='hard'),
+    dict(name='すきまを読む', d=H, n=8, k=14, tier=3),
+    dict(name='深夜便', d=H, n=8, k=13, tier=3),
+    dict(name='迷いの通路', d=H, n=8, k=14, tier=3),
+    dict(name='満車ドック', d=H, n=8, k=15, tier=3),
+    dict(name='朝焼け便', d=H, n=8, k=14, tier=3),
+    dict(name='倉庫番の意地', d=H, n=8, k=15, tier=3),
+    dict(name='最終チェック', d=H, n=8, k=14, tier=3),
+    dict(name='工場長の試練', d=H, n=8, k=15, tier=3),
+    dict(name='SORT MASTER', d=H, n=8, k=15, tier=3),
+]
 
 
 def build(spec, seed):
     rng = random.Random(seed)
-    best = None
-    for attempt in range(spec.get('tries', 60)):
-        st = make_layout(rng, spec)
-        if max(len(l) for l in st['lanes']) > 9:
+    for _ in range(20000):
+        p = random_puzzle(rng, spec['n'], spec['k'])
+        if p is None:
             continue
-        par = par_of(st)
-        if par is None:
+        trucks, boxes, rows, cols = p
+        tier = logical_tier(spec['n'], trucks, rows, cols, set(boxes))
+        if tier != spec['tier']:
             continue
-        rate = greedy_random_rate(st, seed=attempt)
-        score = abs(rate - spec['target'])
-        if best is None or score < best[0]:
-            best = (score, st, par, rate)
-        if score < 0.04:
-            break
-    assert best, 'no solvable layout for %s' % spec
-    return best[1], best[2], best[3]
-
-
-E, N, H = 'easy', 'normal', 'hard'
-# lanes, docks, colors, trucks, shelf, target greedy-random win rate
-SPECS = [
-    # EASY: learn the loop, first chains
-    dict(name='はじめての出荷', d=E, lanes=3, docks=2, colors=[0, 1], trucks=4, shelf=5, target=1.0, tutorial='basic'),
-    dict(name='棚をつかう', d=E, lanes=3, docks=2, colors=[0, 1, 2], trucks=5, shelf=5, target=0.9, tutorial='shelf'),
-    dict(name='連鎖出荷', d=E, lanes=3, docks=2, colors=[0, 1, 2], trucks=6, shelf=5, target=0.85, tutorial='chain'),
-    dict(name='3台ならび', d=E, lanes=4, docks=3, colors=[0, 1, 2], trucks=6, shelf=5, target=0.85),
-    dict(name='順番を読む', d=E, lanes=4, docks=2, colors=[0, 1, 2], trucks=7, shelf=4, target=0.75, tutorial='queue'),
-    dict(name='4色便', d=E, lanes=4, docks=3, colors=[0, 1, 2, 3], trucks=8, shelf=5, target=0.75),
-    dict(name='ちいさな棚', d=E, lanes=4, docks=3, colors=[0, 1, 2], trucks=8, shelf=4, target=0.65),
-    dict(name='見えない荷物', d=E, lanes=4, docks=3, colors=[0, 1, 2, 3], trucks=8, shelf=5, target=0.7, hidden=0.25, tutorial='hidden'),
-    dict(name='倉庫の朝', d=E, lanes=5, docks=3, colors=[0, 1, 2, 3], trucks=9, shelf=5, target=0.6),
-    dict(name='新人卒業', d=E, lanes=5, docks=3, colors=[0, 1, 2, 3], trucks=10, shelf=4, target=0.5),
-    # NORMAL
-    dict(name='閉ざされたレーン', d=N, lanes=5, docks=3, colors=[0, 1, 2, 3], trucks=10, shelf=5, target=0.5, locks=1, lockAfter=2, tutorial='lock'),
-    dict(name='5色便', d=N, lanes=5, docks=3, colors=[0, 1, 2, 3, 4], trucks=10, shelf=5, target=0.45),
-    dict(name='2台ドック', d=N, lanes=5, docks=2, colors=[0, 1, 2, 3], trucks=10, shelf=5, target=0.4),
-    dict(name='霧の倉庫', d=N, lanes=5, docks=3, colors=[0, 1, 2, 3, 4], trucks=11, shelf=5, target=0.4, hidden=0.35),
-    dict(name='大型トラック', d=N, lanes=5, docks=3, colors=[0, 1, 2, 3], trucks=9, cap=4, shelf=5, target=0.4, tutorial='big'),
-    dict(name='棚4つ', d=N, lanes=5, docks=3, colors=[0, 1, 2, 3, 4], trucks=11, shelf=4, target=0.35),
-    dict(name='夕方ラッシュ', d=N, lanes=6, docks=3, colors=[0, 1, 2, 3, 4], trucks=12, shelf=5, target=0.35, locks=1, lockAfter=3),
-    dict(name='まぜこぜ', d=N, lanes=6, docks=3, colors=[0, 1, 2, 3, 4, 5], trucks=12, shelf=5, target=0.3, hidden=0.2),
-    dict(name='細い通路', d=N, lanes=5, docks=2, colors=[0, 1, 2, 3, 4], trucks=11, shelf=5, target=0.3),
-    dict(name='中堅昇格', d=N, lanes=6, docks=3, colors=[0, 1, 2, 3, 4, 5], trucks=13, shelf=5, target=0.25, hidden=0.2, locks=1, lockAfter=3),
-    # HARD
-    dict(name='棚3つ', d=H, lanes=5, docks=3, colors=[0, 1, 2, 3, 4], trucks=11, shelf=3, target=0.2, tutorial='hard'),
-    dict(name='6色の迷路', d=H, lanes=6, docks=3, colors=[0, 1, 2, 3, 4, 5], trucks=13, shelf=4, target=0.2),
-    dict(name='大型便ラッシュ', d=H, lanes=6, docks=3, colors=[0, 1, 2, 3, 4], trucks=11, cap=4, shelf=4, target=0.18),
-    dict(name='深い霧', d=H, lanes=6, docks=3, colors=[0, 1, 2, 3, 4, 5], trucks=13, shelf=4, target=0.18, hidden=0.4),
-    dict(name='2台だけ', d=H, lanes=6, docks=2, colors=[0, 1, 2, 3, 4], trucks=12, shelf=4, target=0.15),
-    dict(name='二重ロック', d=H, lanes=6, docks=3, colors=[0, 1, 2, 3, 4, 5], trucks=14, shelf=4, target=0.15, locks=2, lockAfter=3),
-    dict(name='夜間仕分け', d=H, lanes=6, docks=3, colors=[0, 1, 2, 3, 4, 5], trucks=14, shelf=3, target=0.12, hidden=0.25),
-    dict(name='特大便', d=H, lanes=6, docks=3, colors=[0, 1, 2, 3, 4, 5], trucks=12, cap=4, shelf=4, target=0.12, hidden=0.2),
-    dict(name='工場長の試練', d=H, lanes=6, docks=2, colors=[0, 1, 2, 3, 4, 5], trucks=14, shelf=4, target=0.1, locks=1, lockAfter=4),
-    dict(name='SORT MASTER', d=H, lanes=6, docks=3, colors=[0, 1, 2, 3, 4, 5], trucks=16, shelf=4, target=0.08, hidden=0.3, locks=2, lockAfter=4),
-]
+        if count_solutions(spec['n'], trucks, rows, cols) != 1:
+            continue
+        return trucks, boxes, rows, cols
+    raise SystemExit('could not build %s' % spec['name'])
 
 
 def main():
-    out = []
-    report = []
+    out, report = [], []
     for i, spec in enumerate(SPECS, start=1):
-        st, par, rate = build(spec, seed=7000 + i * 101)
+        trucks, boxes, rows, cols = build(spec, 9000 + i * 131)
+        rng = random.Random(i)
         stage = {
             'id': i,
             'name': spec['name'],
             'difficulty': spec['d'],
-            'docks': st['docks'],
-            'shelf': st['shelf'],
-            'truckCapacity': st['truckCapacity'],
-            'trucks': st['trucks'],
-            'lanes': st['lanes'],
-            'par': par,
+            'size': spec['n'],
+            'tier': spec['tier'],
+            # truck i is paired with box i (used for the shipping finale)
+            'trucks': [[r, c, rng.randrange(6)] for r, c in trucks],
+            'solution': [[r, c] for r, c in boxes],
         }
-        for k in ('hidden', 'locks'):
-            if k in st:
-                stage[k] = st[k]
         if spec.get('tutorial'):
             stage['tutorial'] = spec['tutorial']
         out.append(stage)
-        line = '%2d %-6s pkgs=%2d par=%d greedy-random win=%3d%% (target %3d%%)' % (
-            i, spec['d'], sum(len(l) for l in st['lanes']), par, rate * 100, spec['target'] * 100)
+        line = '%2d %-6s %dx%d boxes=%2d tier=%d rows=%s cols=%s' % (
+            i, spec['d'], spec['n'], spec['n'], spec['k'], spec['tier'], rows, cols)
         report.append(line)
         print(line, flush=True)
     root = os.path.join(os.path.dirname(__file__), '..')
     with open(os.path.join(root, 'assets', 'stages', 'stages.json'), 'w', encoding='utf-8') as f:
-        json.dump({'version': 2, 'stages': out}, f, ensure_ascii=False, separators=(',', ':'))
+        json.dump({'version': 3, 'stages': out}, f, ensure_ascii=False, separators=(',', ':'))
     with open(os.path.join(root, 'docs', 'balance_report.txt'), 'w', encoding='utf-8') as f:
-        f.write('# tool/gen_stages.py output: greedy-random player win rate per stage\n')
+        f.write('# tool/gen_stages.py: every stage has a unique solution and is solvable by deduction.\n'
+                '# tier 1 = counting, 2 = line patterns, 3 = "what if" look-ahead\n')
         f.write('\n'.join(report) + '\n')
 
 

@@ -11,7 +11,6 @@ StageResult result({
   bool cleared = true,
   int score = 1000,
   int stars = 2,
-  int chain = 1,
   int deliveries = 10,
 }) => StageResult(
   stageId: id,
@@ -19,7 +18,6 @@ StageResult result({
   score: score,
   stars: stars,
   deliveries: deliveries,
-  maxChain: chain,
   seconds: 30,
 );
 
@@ -88,7 +86,7 @@ void main() {
     test('bad values are sanitized', () async {
       final store = MemoryStore()
         ..data[SaveRepository.primaryKey] = jsonEncode({
-          'schemaVersion': 2,
+          'schemaVersion': 3,
           'coins': -50,
           'stages': {
             '1': {'stars': 9, 'clears': 1},
@@ -117,7 +115,25 @@ void main() {
       expect(d.stages, isEmpty);
       expect(d.upgrades, {'center': 1});
       expect(d.adsRemoved, isTrue);
-      expect(migrated['schemaVersion'], 2);
+      expect(migrated['schemaVersion'], 3);
+    });
+
+    test('v2 save migrates: stages dropped, shelf upgrade refunded', () {
+      final d = SaveData.fromJson(
+        SaveMigrations.migrate({
+          'schemaVersion': 2,
+          'coins': 100,
+          'stages': {
+            '4': {'stars': 2, 'clears': 3},
+          },
+          'upgrades': {'shelf': 1, 'manual': 2},
+          'unlocked': ['skin_mint'],
+        }),
+      );
+      expect(d.coins, 700);
+      expect(d.stages, isEmpty);
+      expect(d.upgrades, {'manual': 2});
+      expect(d.unlocked, contains('skin_mint'));
     });
 
     test('encode includes schema version', () {
@@ -186,13 +202,10 @@ void main() {
       await pc.addCoins(1000);
       expect(await pc.buyUpgrade('manual'), isTrue);
       expect(pc.data.coins, 800);
-      expect(pc.modifiers.extraUndo, 1);
+      expect(pc.modifiers.extraHints, 1);
       expect(await pc.buyUpgrade('manual'), isTrue);
       expect(await pc.buyUpgrade('manual'), isFalse); // max level
       expect(pc.data.coins, 300);
-      await pc.addCoins(600);
-      expect(await pc.buyUpgrade('shelf'), isTrue);
-      expect(pc.modifiers.extraShelf, 1);
     });
 
     test('center upgrade boosts coins', () {
@@ -239,9 +252,7 @@ void main() {
         final missions = pc.missions();
         expect(missions.length, 3);
         for (var i = 0; i < 6; i++) {
-          await pc.recordResult(
-            result(score: 3000, stars: 3, chain: 3, deliveries: 15),
-          );
+          await pc.recordResult(result(score: 3000, stars: 3, deliveries: 15));
         }
         final done = pc.missions().where((m) => m.complete).toList();
         expect(done, isNotEmpty);

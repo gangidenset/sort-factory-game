@@ -6,35 +6,36 @@ import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
 
 import '../../ui/palette.dart';
+import '../logic/deduction.dart';
 import '../logic/game_session.dart';
 import '../logic/models.dart';
 import 'board_layout.dart';
 import 'package_painter.dart';
 
-/// Flame game hosting a [GameSession].
-///
-/// The session resolves a tap (including whole departure chains) instantly.
-/// The board then *replays* the resulting events one by one on its own visual
-/// copy of the state, so chains read clearly: box flies → truck departs →
-/// next truck rolls in → shelf boxes hop in → next departure...
+/// What just happened on the board (for sounds / haptics).
+enum BoardCue { box, cross, erase, lineDone, shipStep, shipDone }
+
+/// Flame game showing a deduction puzzle grid. All rules live in
+/// [GameSession]; this renders it and turns touches into marks.
 class SortFactoryGame extends FlameGame {
   SortFactoryGame({
     required this.session,
     required this.skin,
     required this.boxStyle,
-    required this.onEvent,
-    required this.onSettled,
+    required this.onCue,
+    required this.onSolved,
   });
 
   final GameSession session;
   final FactorySkin skin;
   final String boxStyle;
 
-  /// Called as each event is *played* (sound, haptics, HUD).
-  final void Function(SessionEvent e) onEvent;
+  /// Called for every feedback-worthy event; [step] counts shipped trucks
+  /// during the finale (for rising pitch).
+  final void Function(BoardCue cue, int step) onCue;
 
-  /// Called when playback is idle and the session is over (show result).
-  final VoidCallback onSettled;
+  /// Called once the shipping finale has finished playing.
+  final VoidCallback onSolved;
 
   late final BoardComponent board;
 
@@ -47,66 +48,10 @@ class SortFactoryGame extends FlameGame {
     add(board);
   }
 
-  /// Highlights [lane] as a hint until the next tap.
-  void showHint(int lane) => board.hintLane = lane;
+  void showHint(Hint hint) => board.hint = hint;
 
-  /// Re-syncs visuals after undo / revive.
-  void resync() => board.resync();
-}
-
-class _VBox {
-  _VBox(this.id, this.color, {this.hidden = false});
-  final int id;
-  final int color;
-  bool hidden;
-  double reveal = 0; // flip animation
-}
-
-class _VTruck {
-  _VTruck(this.id, this.color, this.capacity, this.filled);
-  final int id;
-  final int color;
-  final int capacity;
-  int filled;
-  double arrive = 0; // 1 → 0 slide-in
-  double bounce = 0;
-}
-
-class _Flyer {
-  _Flyer(
-    this.box,
-    this.from,
-    this.to,
-    this.toSize,
-    this.onLand, {
-    this.fall = false,
-  });
-  final _VBox box;
-  final Offset from;
-  final Offset to;
-  final double toSize;
-  final VoidCallback onLand;
-  final bool fall;
-  double t = 0;
-  static const duration = 0.2;
-}
-
-class _Departing {
-  _Departing(this.truck, this.dock);
-  final _VTruck truck;
-  final int dock;
-  double t = 0;
-  static const duration = 0.55;
-}
-
-class _Floater {
-  _Floater(this.text, this.pos, this.color, {this.size = 20});
-  final String text;
-  final Offset pos;
-  final Color color;
-  final double size;
-  double t = 0;
-  static const duration = 1.0;
+  /// Call after undo / reset / hint applied from outside.
+  void refresh() => board.afterChange(silent: true);
 }
 
 class _Particle {
@@ -116,50 +61,57 @@ class _Particle {
   final Color color;
   final double size;
   double t = 0;
-  double spin = 0;
-  static const life = 0.9;
+  static const life = 1.0;
 }
 
 class BoardComponent extends PositionComponent
-    with HasGameReference<SortFactoryGame>, TapCallbacks {
+    with HasGameReference<SortFactoryGame>, TapCallbacks, DragCallbacks {
   BoardLayout? _layout;
   late PackagePainter _painter;
-  final _rng = math.Random(7);
+  final _rng = math.Random(3);
 
-  // Visual state (replayed from events).
-  final List<List<_VBox>> _lanes = [];
-  final List<_VTruck?> _docks = [];
-  final List<_VBox> _shelf = [];
-  int _queueShown = 0;
-
-  final List<SessionEvent> _pending = [];
-  double _wait = 0;
-  int? _bufferedTap;
-  bool _settledNotified = false;
-
-  final List<_Flyer> _flyers = [];
-  final Map<int, int> _inbound = {}; // truck id -> boxes in flight
-  final List<_Departing> _departing = [];
-  final List<_Floater> _floaters = [];
-  final List<_Particle> _particles = [];
-  double _shake = 0;
+  Hint? hint;
   double _time = 0;
-  int? hintLane;
 
-  final _paint = Paint();
-  final _stroke = Paint()..style = PaintingStyle.stroke;
+  // Small pop animations keyed by cell / line.
+  final Map<Cell, double> _pop = {};
+  final Map<int, double> _rowPulse = {};
+  final Map<int, double> _colPulse = {};
+  late List<LineState> _rowStates;
+  late List<LineState> _colStates;
+  final List<_Particle> _particles = [];
+
+  // Drag painting.
+  Mark? _paint;
+  Cell? _lastCell;
+  Offset? _dragPos;
+  double _lastApplyTime = -1;
+  Cell? _lastApplyCell;
+
+  // Finale.
+  double? _finale; // seconds since solved
+  int _shipped = 0;
+  bool _done = false;
+  static const _stagger = 0.16;
+  static const _fly = 0.28;
+  static const _drive = 0.6;
+
+  final _fill = Paint();
+  final _stroke = Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeCap = StrokeCap.round;
 
   GameSession get s => game.session;
+  bool get inFinale => _finale != null;
 
-  bool get isIdle => _pending.isEmpty && _flyers.isEmpty && _wait <= 0;
+  @visibleForTesting
+  Rect debugCellRect(Cell c) => _layout!.cellRect(c);
 
   @override
   Future<void> onLoad() async {
     _painter = PackagePainter(game.boxStyle);
-    // Web loads CJK fallback fonts lazily: drop cached text layouts when
-    // fonts change so labels don't stay as tofu.
     PaintingBinding.instance.systemFonts.addListener(_textCache.clear);
-    resync();
+    _snapshotLines();
   }
 
   @override
@@ -168,273 +120,190 @@ class BoardComponent extends PositionComponent
     super.onRemove();
   }
 
-  /// Copies the logical state into the visual state (start, undo, revive).
-  void resync() {
-    s.drainEvents();
-    _pending.clear();
-    _flyers.clear();
-    _inbound.clear();
-    _wait = 0;
-    _bufferedTap = null;
-    _settledNotified = false;
-    hintLane = null;
-    _lanes
-      ..clear()
-      ..addAll([
-        for (final l in s.lanes)
-          [for (final p in l) _VBox(p.id, p.color, hidden: p.hidden)],
-      ]);
-    _docks
-      ..clear()
-      ..addAll([
-        for (final t in s.docks)
-          t == null ? null : _VTruck(t.id, t.color, t.capacity, t.filled),
-      ]);
-    _shelf
-      ..clear()
-      ..addAll([for (final p in s.shelf) _VBox(p.id, p.color)]);
-    _queueShown = s.queue.length;
-    _relayout();
-  }
-
-  @visibleForTesting
-  Rect debugLaneRect(int lane) => _layout!.laneRects[lane];
-
   @override
   void onGameResize(Vector2 size) {
     super.onGameResize(size);
     this.size = size;
-    _relayout();
+    if (size.x > 0 && size.y > 0) {
+      _layout = BoardLayout(size: Size(size.x, size.y), n: s.size);
+    }
   }
 
-  void _relayout() {
-    if (size.x <= 0 || size.y <= 0) return;
-    final maxDepth = s.config.lanes.fold(0, (a, l) => math.max(a, l.length));
-    _layout = BoardLayout(
-      size: Size(size.x, size.y),
-      lanes: s.lanes.length,
-      maxDepth: maxDepth,
-      docks: s.docks.length,
-      shelfSlots: s.config.shelf + 2, // room for upgrade / revive slots
-    );
+  void _snapshotLines() {
+    _rowStates = [for (var r = 0; r < s.size; r++) s.rowState(r)];
+    _colStates = [for (var c = 0; c < s.size; c++) s.colState(c)];
+  }
+
+  /// Detects newly completed lines and the solved state after any change.
+  void afterChange({bool silent = false}) {
+    var lineDone = false;
+    for (var i = 0; i < s.size; i++) {
+      final r = s.rowState(i), c = s.colState(i);
+      if (r == LineState.done &&
+          _rowStates[i] != LineState.done &&
+          s.config.rowClues[i] > 0) {
+        _rowPulse[i] = 1;
+        lineDone = true;
+      }
+      if (c == LineState.done &&
+          _colStates[i] != LineState.done &&
+          s.config.colClues[i] > 0) {
+        _colPulse[i] = 1;
+        lineDone = true;
+      }
+    }
+    _snapshotLines();
+    if (lineDone && !silent && !s.isCleared) game.onCue(BoardCue.lineDone, 0);
+    if (s.isCleared && _finale == null) {
+      _finale = 0;
+      hint = null;
+    }
   }
 
   // ---------------------------------------------------------------------------
   // Input
 
+  void _apply(Cell c, Mark m) {
+    if (inFinale || !s.setMark(c, m)) return;
+    _pop[c] = 1;
+    if (hint?.cell == c) hint = null;
+    game.onCue(switch (m) {
+      Mark.box => BoardCue.box,
+      Mark.cross => BoardCue.cross,
+      Mark.none => BoardCue.erase,
+    }, 0);
+    afterChange();
+  }
+
+  /// Taps and drag-starts can both fire for one touch: apply only once.
+  bool _dedupe(Cell c) {
+    if (_lastApplyCell == c && _time - _lastApplyTime < 0.25) return true;
+    _lastApplyCell = c;
+    _lastApplyTime = _time;
+    return false;
+  }
+
   @override
-  void onTapDown(TapDownEvent event) {
-    final l = _layout;
-    if (l == null) return;
-    final lane = l.laneAt(Offset(event.localPosition.x, event.localPosition.y));
-    if (lane == null) return;
-    if (isIdle) {
-      _doTap(lane);
-    } else {
-      _bufferedTap = lane; // feels responsive during chain playback
+  void onTapUp(TapUpEvent event) {
+    final c = _layout?.cellAt(
+      Offset(event.localPosition.x, event.localPosition.y),
+    );
+    if (c == null || s.isTruck(c) || _dedupe(c)) return;
+    _apply(c, s.nextMark(c));
+  }
+
+  @override
+  void onDragStart(DragStartEvent event) {
+    super.onDragStart(event);
+    _dragPos = Offset(event.localPosition.x, event.localPosition.y);
+    final c = _layout?.cellAt(_dragPos!);
+    _paint = null;
+    _lastCell = c;
+    if (c == null || s.isTruck(c)) return;
+    _paint = s.nextMark(c);
+    if (!_dedupe(c)) _apply(c, _paint!);
+  }
+
+  @override
+  void onDragUpdate(DragUpdateEvent event) {
+    final pos = _dragPos;
+    final paint = _paint;
+    if (pos == null || paint == null) return;
+    _dragPos = pos + Offset(event.localDelta.x, event.localDelta.y);
+    final c = _layout?.cellAt(_dragPos!);
+    if (c == null || c == _lastCell || s.isTruck(c)) return;
+    _lastCell = c;
+    // Paint only over empty cells (or erase only marked ones): a stroke
+    // never overwrites a different mark by accident.
+    final cur = s.markAt(c);
+    if (paint == Mark.none ? cur != Mark.none : cur == Mark.none) {
+      _apply(c, paint);
     }
   }
 
-  void _doTap(int lane) {
-    if (!s.canTap(lane)) {
-      if (s.status == SessionStatus.playing && s.isLocked(lane)) {
-        _floaters.add(
-          _Floater(
-            'LOCK',
-            _layout!.laneRects[lane].topCenter.translate(0, 30),
-            AppColors.danger,
-          ),
-        );
-      }
-      return;
-    }
-    hintLane = null;
-    s.tap(lane);
-    _pending.addAll(s.drainEvents());
-    _settledNotified = false;
+  @override
+  void onDragEnd(DragEndEvent event) {
+    super.onDragEnd(event);
+    _paint = null;
+    _dragPos = null;
+  }
+
+  @override
+  void onDragCancel(DragCancelEvent event) {
+    super.onDragCancel(event);
+    _paint = null;
+    _dragPos = null;
   }
 
   // ---------------------------------------------------------------------------
-  // Playback
+  // Update
 
   @override
   void update(double dt) {
     _time += dt;
-    final l = _layout;
-    if (l == null) return;
-
-    for (final f in List.of(_flyers)) {
-      f.t += dt;
-      if (f.t >= _Flyer.duration) {
-        _flyers.remove(f);
-        f.onLand();
+    for (final m in [_pop, _rowPulse, _colPulse]) {
+      for (final k in m.keys.toList()) {
+        final v = m[k]! - dt * 4;
+        if (v <= 0) {
+          m.remove(k);
+        } else {
+          (m as Map)[k] = v;
+        }
       }
     }
-    for (final d in _departing) {
-      d.t += dt;
-    }
-    _departing.removeWhere((d) => d.t >= _Departing.duration);
-    for (final f in _floaters) {
-      f.t += dt;
-    }
-    _floaters.removeWhere((f) => f.t >= _Floater.duration);
     for (final p in _particles) {
       p.t += dt;
       p.vel = p.vel.translate(0, 900 * dt);
       p.pos += p.vel * dt;
-      p.spin += dt * 10;
     }
     _particles.removeWhere((p) => p.t >= _Particle.life);
-    for (final t in _docks) {
-      if (t == null) continue;
-      t.arrive = math.max(0, t.arrive - dt * 3.2);
-      t.bounce = math.max(0, t.bounce - dt * 5);
-    }
-    for (final lane in _lanes) {
-      for (final b in lane) {
-        if (b.reveal > 0) b.reveal = math.max(0, b.reveal - dt * 4);
-      }
-    }
-    _shake = math.max(0, _shake - dt);
 
-    _wait -= dt;
-    while (_wait <= 0 && _pending.isNotEmpty) {
-      _play(_pending.removeAt(0));
-    }
-    if (isIdle) {
-      final buffered = _bufferedTap;
-      _bufferedTap = null;
-      if (buffered != null && s.status == SessionStatus.playing) {
-        _doTap(buffered);
-      } else if (s.isOver && !_settledNotified && _departing.isEmpty) {
-        _settledNotified = true;
-        game.onSettled();
-      }
-    }
-  }
-
-  void _play(SessionEvent e) {
-    final l = _layout!;
-    game.onEvent(e);
-    switch (e.type) {
-      case SessionEventType.move:
-        final p = e.package!;
-        late _VBox box;
-        late Offset from;
-        switch (e.origin!) {
-          case LaneOrigin(:final lane):
-            box = _lanes[lane].isNotEmpty
-                ? _lanes[lane].removeAt(0)
-                : _VBox(p.id, p.color);
-            from = l.packageCenter(lane, 0);
-          case ShelfOrigin(:final slot):
-            final i = slot.clamp(0, math.max(0, _shelf.length - 1)).toInt();
-            box = _shelf.isNotEmpty ? _shelf.removeAt(i) : _VBox(p.id, p.color);
-            from = l
-                .shelfSlotRects[math.min(slot, l.shelfSlotRects.length - 1)]
-                .center;
+    final f = _finale;
+    if (f != null && !_done) {
+      _finale = f + dt;
+      final total = s.config.trucks.length;
+      // A truck "ships" when its box has landed.
+      while (_shipped < total &&
+          _finale! >= 0.35 + _shipped * _stagger + _fly) {
+        final l = _layout;
+        if (l != null) {
+          final t = s.config.trucks[_shipped];
+          _burst(l.cellRect(t.cell).center, packageColors[t.color], 14);
         }
-        box.hidden = false;
-        switch (e.destination!) {
-          case ToTruck(:final dock):
-            final t = _docks[dock]!;
-            final seat = t.filled + (_inbound[t.id] ?? 0);
-            _inbound[t.id] = (_inbound[t.id] ?? 0) + 1;
-            final to = BoardTruck.seat(
-              l.dockRects[dock],
-              math.min(seat, t.capacity - 1),
-              t.capacity,
-            );
-            _flyers.add(
-              _Flyer(
-                box,
-                from,
-                to,
-                BoardTruck.seatBox(l.dockRects[dock], t.capacity),
-                () {
-                  _inbound[t.id] = (_inbound[t.id] ?? 1) - 1;
-                  t.filled = math.min(t.capacity, t.filled + 1);
-                  t.bounce = 1;
-                },
+        _shipped++;
+        game.onCue(BoardCue.shipStep, _shipped);
+      }
+      if (_finale! >= 0.35 + total * _stagger + _fly + _drive + 0.25) {
+        _done = true;
+        final l = _layout;
+        if (l != null) {
+          for (var i = 0; i < 5; i++) {
+            _burst(
+              Offset(
+                l.grid.left + l.grid.width * (0.1 + 0.2 * i),
+                l.grid.center.dy,
               ),
+              packageColors[i % packageColors.length],
+              22,
             );
-            // Let the box land before its truck drives off.
-            final departsNext =
-                _pending.isNotEmpty &&
-                _pending.first.type == SessionEventType.depart;
-            _wait = departsNext ? _Flyer.duration + 0.02 : 0.12;
-          case ToShelf(:final slot):
-            final to = l
-                .shelfSlotRects[math.min(slot, l.shelfSlotRects.length - 1)]
-                .center;
-            _flyers.add(
-              _Flyer(box, from, to, l.pkgSize * 0.9, () => _shelf.add(box)),
-            );
-            _wait = 0.1;
-          case Overflow():
-            final to = Offset(l.shelfRect.right + 20, l.shelfRect.center.dy);
-            _flyers.add(
-              _Flyer(box, from, to, l.pkgSize, () => _shake = 0.4, fall: true),
-            );
-            _wait = 0.25;
+          }
         }
-      case SessionEventType.depart:
-        final d = e.dock!;
-        final gone = _docks[d];
-        if (gone != null) {
-          gone.filled = gone.capacity;
-          _departing.add(_Departing(gone, d));
-        }
-        final next = e.arrived;
-        _docks[d] = next == null
-            ? null
-            : (_VTruck(next.id, next.color, next.capacity, 0)..arrive = 1);
-        if (next != null) _queueShown = math.max(0, _queueShown - 1);
-        final rect = l.dockRects[d];
-        _burst(rect.center, packageColors[e.departed!.color], 18 + 6 * e.chain);
-        _floaters.add(
-          _Floater(
-            e.chain >= 2 ? '${e.chain}連鎖!' : '出荷!',
-            rect.center.translate(0, -rect.height * 0.2),
-            e.chain >= 2 ? AppColors.coin : AppColors.success,
-            size: e.chain >= 2 ? 28 + 4.0 * e.chain : 22,
-          ),
-        );
-        if (e.chain >= 2) _shake = 0.12 + 0.04 * e.chain;
-        _wait = 0.32;
-      case SessionEventType.reveal:
-        final lane = e.lane!;
-        if (_lanes[lane].isNotEmpty) {
-          _lanes[lane].first
-            ..hidden = false
-            ..reveal = 1;
-        }
-      case SessionEventType.cleared:
-        for (var i = 0; i < 4; i++) {
-          _burst(
-            Offset(size.x * (0.2 + 0.2 * i), size.y * 0.35),
-            packageColors[i % packageColors.length],
-            24,
-          );
-        }
-      case SessionEventType.shelfCompacted ||
-          SessionEventType.undone ||
-          SessionEventType.failed:
-        break;
+        game.onCue(BoardCue.shipDone, total);
+        game.onSolved();
+      }
     }
   }
 
   void _burst(Offset at, Color color, int n) {
     for (var i = 0; i < n; i++) {
       final a = _rng.nextDouble() * math.pi * 2;
-      final v = 180 + _rng.nextDouble() * 320;
-      final palette = [color, Colors.white, AppColors.coin];
+      final v = 120 + _rng.nextDouble() * 300;
       _particles.add(
         _Particle(
           at,
-          Offset(math.cos(a) * v, math.sin(a) * v - 260),
-          palette[i % palette.length],
-          4 + _rng.nextDouble() * 5,
+          Offset(math.cos(a) * v, math.sin(a) * v - 240),
+          [color, Colors.white, AppColors.coin][i % 3],
+          3 + _rng.nextDouble() * 5,
         ),
       );
     }
@@ -448,277 +317,185 @@ class BoardComponent extends PositionComponent
     final c = canvas;
     final l = _layout;
     if (l == null) return;
-    c.save();
-    if (_shake > 0) {
-      c.translate(
-        math.sin(_time * 70) * _shake * 14,
-        math.cos(_time * 55) * _shake * 6,
-      );
-    }
-    _renderQueue(c, l);
-    _renderDocks(c, l);
-    _renderShelf(c, l);
-    _renderLanes(c, l);
-    for (final f in _flyers) {
-      final k = Curves.easeInOut.transform((f.t / _Flyer.duration).clamp(0, 1));
-      var pos = Offset.lerp(f.from, f.to, k)!;
-      pos = pos.translate(0, -math.sin(k * math.pi) * 40); // arc
-      if (f.fall) pos = pos.translate(0, k * k * 60);
-      final size = l.pkgSize + (f.toSize - l.pkgSize) * k;
-      _painter.drawBox(c, f.box.color, pos, size, happy: true);
-    }
-    for (final p in _particles) {
-      final a = 1 - p.t / _Particle.life;
-      _paint.color = p.color.withValues(alpha: a);
-      c.save();
-      c.translate(p.pos.dx, p.pos.dy);
-      c.rotate(p.spin);
-      c.drawRect(
-        Rect.fromCenter(
-          center: Offset.zero,
-          width: p.size,
-          height: p.size * 0.6,
-        ),
-        _paint,
-      );
-      c.restore();
-    }
-    for (final f in _floaters) {
-      final k = f.t / _Floater.duration;
-      final pop = k < 0.15
-          ? 0.6 + k / 0.15 * 0.6
-          : 1.2 - math.min(0.2, (k - 0.15));
-      _text(
-        c,
-        f.text,
-        f.pos.translate(0, -40 * k),
-        f.size * pop,
-        f.color.withValues(alpha: (1 - k * k).clamp(0, 1)),
-        bold: true,
-        outline: true,
-      );
-    }
-    c.restore();
-  }
+    final fg = game.skin.onBackground;
+    final n = s.size;
 
-  void _renderQueue(Canvas c, BoardLayout l) {
-    final r = l.queueRect;
-    _text(
-      c,
-      'NEXT',
-      Offset(r.left + 20, r.center.dy),
-      11,
-      game.skin.onBackground.withValues(alpha: 0.6),
-      bold: true,
-    );
-    final q = s.queue;
-    final shownStart = q.length - _queueShown;
-    var x = r.left + 50;
-    for (
-      var i = math.max(0, shownStart);
-      i < q.length && x < r.right - 30;
-      i++
-    ) {
-      _painter.drawMiniTruck(
-        c,
-        Offset(x + 12, r.center.dy),
-        16,
-        q[i].color,
-        alpha: i == shownStart ? 1 : 0.75,
-      );
-      x += 34;
-    }
-    final remaining = _queueShown + _docks.whereType<_VTruck>().length;
-    _text(
-      c,
-      '残り$remaining台',
-      Offset(r.right - 30, r.center.dy),
-      11,
-      game.skin.onBackground.withValues(alpha: 0.6),
-      bold: true,
-    );
-  }
+    // Floor.
+    _fill.color = Colors.white.withValues(alpha: game.skin.isDark ? 0.1 : 0.9);
+    c.drawRRect(RRect.fromRectXY(l.grid.inflate(4), 14, 14), _fill);
 
-  void _renderDocks(Canvas c, BoardLayout l) {
-    for (var i = 0; i < l.dockRects.length; i++) {
-      final r = l.dockRects[i];
-      _paint.color = game.skin.onBackground.withValues(alpha: 0.06);
-      c.drawRRect(RRect.fromRectXY(r.inflate(2), 14, 14), _paint);
-      final t = _docks[i];
-      if (t != null) {
-        final dx = -t.arrive * t.arrive * (r.left + r.width);
-        c.save();
-        c.translate(dx, 0);
-        _painter.drawTruck(
-          c,
-          r,
-          t.color,
-          t.capacity,
-          t.filled,
-          bounce: t.bounce,
-          wheelSpin: t.arrive * 12,
-        );
-        c.restore();
-      }
-    }
-    for (final d in _departing) {
-      final r = l.dockRects[d.dock];
-      final k = d.t / _Departing.duration;
-      final dx = k * k * (size.x - r.left + 40);
-      c.save();
-      c.translate(dx, -math.sin(k * math.pi) * 6);
-      _painter.drawTruck(
-        c,
-        r,
-        d.truck.color,
-        d.truck.capacity,
-        d.truck.capacity,
-        wheelSpin: d.t * 30,
-      );
-      c.restore();
-    }
-  }
+    final related = hint?.related.toSet() ?? const <Cell>{};
+    final bad = inFinale ? const <Cell>{} : s.violations;
 
-  void _renderShelf(Canvas c, BoardLayout l) {
-    final cap = s.shelfCapacity;
-    final danger = _shelf.length >= cap - 1;
-    final r = l.shelfRect;
-    final visibleSlots = math.min(cap, l.shelfSlotRects.length);
-    final last = l.shelfSlotRects[visibleSlots - 1];
-    final board = Rect.fromLTRB(r.left, r.top, last.right + 8, r.bottom);
-    final pulse = danger ? 0.5 + 0.5 * math.sin(_time * 8) : 0.0;
-    _paint.color = (danger ? AppColors.danger : const Color(0xFF8A6A4A))
-        .withValues(alpha: 0.12 + 0.1 * pulse);
-    c.drawRRect(RRect.fromRectXY(board, 12, 12), _paint);
-    _text(
-      c,
-      '棚',
-      Offset(board.left - 0, board.top - 8),
-      11,
-      game.skin.onBackground.withValues(alpha: 0.6),
-      bold: true,
-    );
-    for (var i = 0; i < visibleSlots; i++) {
-      final sr = l.shelfSlotRects[i];
-      _stroke
-        ..color = (danger ? AppColors.danger : game.skin.onBackground)
-            .withValues(alpha: 0.25)
-        ..strokeWidth = 2;
-      c.drawRRect(RRect.fromRectXY(sr, 8, 8), _stroke);
-      if (i < _shelf.length) {
-        _painter.drawBox(c, _shelf[i].color, sr.center, sr.width * 0.86);
-      }
-    }
-  }
+    for (var r = 0; r < n; r++) {
+      for (var col = 0; col < n; col++) {
+        final cell = (r, col);
+        final rect = l.cellRect(cell);
+        final inner = rect.deflate(1.5);
+        _fill.color =
+            ((r + col).isEven
+                    ? const Color(0xFFE9EEF5)
+                    : const Color(0xFFF4F7FB))
+                .withValues(alpha: game.skin.isDark ? 0.16 : 1);
+        c.drawRRect(RRect.fromRectXY(inner, 6, 6), _fill);
+        if (related.contains(cell)) {
+          _fill.color = AppColors.coin.withValues(alpha: 0.22);
+          c.drawRRect(RRect.fromRectXY(inner, 6, 6), _fill);
+        }
+        if (s.isTruck(cell) || inFinale) continue;
 
-  void _renderLanes(Canvas c, BoardLayout l) {
-    for (var i = 0; i < _lanes.length; i++) {
-      final r = l.laneRects[i];
-      final locked = s.isLocked(i);
-      _paint.color = game.skin.belt.withValues(alpha: locked ? 0.35 : 0.9);
-      c.drawRRect(RRect.fromRectXY(r, 14, 14), _paint);
-      // Conveyor stripes.
-      c.save();
-      c.clipRRect(RRect.fromRectXY(r, 14, 14));
-      _paint.color = Colors.white.withValues(alpha: 0.05);
-      for (var y = r.top; y < r.bottom; y += 22) {
-        c.drawRect(Rect.fromLTWH(r.left, y, r.width, 8), _paint);
-      }
-      c.restore();
-
-      final lane = _lanes[i];
-      final maxVisible = ((r.height - l.pkgSize * 0.2) / l.pkgStep).floor();
-      for (var k = math.min(lane.length, maxVisible) - 1; k >= 0; k--) {
-        final b = lane[k];
-        final ctr = l.packageCenter(i, k);
-        final isFront = k == 0;
-        final alpha = locked ? 0.45 : (isFront ? 1.0 : 0.92);
-        final willLoad =
-            isFront && !locked && s.dockFor(b.color) != null && isIdle;
-        final sizeK = isFront ? 1.0 : 0.94;
-        if (b.reveal > 0) {
-          final sx = (b.reveal - 0.5).abs() * 2;
-          c.save();
-          c.translate(ctr.dx, ctr.dy);
-          c.scale(math.max(0.05, sx), 1);
-          _painter.drawBox(
-            c,
-            b.color,
-            Offset.zero,
-            l.pkgSize,
-            hidden: b.reveal > 0.5,
-          );
-          c.restore();
-        } else {
-          _painter.drawBox(
-            c,
-            b.color,
-            ctr,
-            l.pkgSize * sizeK,
-            hidden: b.hidden,
-            alpha: alpha,
-            glow: willLoad,
-            squash: willLoad ? 0.25 * (0.5 + 0.5 * math.sin(_time * 5 + i)) : 0,
-          );
+        final mark = s.markAt(cell);
+        final pop = _pop[cell] ?? 0;
+        switch (mark) {
+          case Mark.box:
+            final scale = 1 + 0.25 * math.sin(pop * math.pi);
+            _painter.drawBox(
+              c,
+              -1,
+              rect.center,
+              l.cell * 0.72 * scale,
+              happy: !bad.contains(cell),
+            );
+            if (bad.contains(cell)) {
+              _stroke
+                ..color = AppColors.danger
+                ..strokeWidth = 3;
+              c.drawRRect(RRect.fromRectXY(inner.deflate(1), 6, 6), _stroke);
+            }
+          case Mark.cross:
+            _cross(
+              c,
+              rect.center,
+              l.cell * 0.2 * (1 + 0.4 * pop),
+              fg.withValues(alpha: 0.55),
+              3,
+            );
+          case Mark.none:
+            if (s.autoCrossReason(cell) != null) {
+              _cross(
+                c,
+                rect.center,
+                l.cell * 0.1,
+                fg.withValues(alpha: 0.18),
+                2,
+              );
+            }
         }
       }
-      if (lane.length > maxVisible) {
-        _text(
+    }
+
+    _renderTrucks(c, l);
+    _renderClues(c, l, fg);
+
+    final h = hint;
+    if (h != null && !inFinale) {
+      final pulse = 0.5 + 0.5 * math.sin(_time * 7);
+      _stroke
+        ..color = AppColors.coin.withValues(alpha: 0.65 + 0.35 * pulse)
+        ..strokeWidth = 4;
+      c.drawRRect(
+        RRect.fromRectXY(l.cellRect(h.cell).deflate(1 - pulse * 2), 8, 8),
+        _stroke,
+      );
+    }
+
+    for (final p in _particles) {
+      _fill.color = p.color.withValues(
+        alpha: (1 - p.t / _Particle.life).clamp(0, 1),
+      );
+      c.drawRect(
+        Rect.fromCenter(center: p.pos, width: p.size, height: p.size * 0.6),
+        _fill,
+      );
+    }
+  }
+
+  void _renderTrucks(Canvas c, BoardLayout l) {
+    final f = _finale;
+    for (var i = 0; i < s.config.trucks.length; i++) {
+      final t = s.config.trucks[i];
+      final rect = l.cellRect(t.cell);
+      if (f == null) {
+        _painter.drawCellTruck(c, rect, t.color);
+        continue;
+      }
+      // Finale: box i hops into truck i, then the truck drives off.
+      final start = 0.35 + i * _stagger;
+      final fly = ((f - start) / _fly).clamp(0.0, 1.0);
+      final drive = ((f - start - _fly) / _drive).clamp(0.0, 1.0);
+      final boxRect = l.cellRect(s.config.solution[i]);
+      if (drive < 1) {
+        final dx = drive * drive * (size.x - rect.left + 20);
+        _painter.drawCellTruck(
           c,
-          '+${lane.length - maxVisible}',
-          Offset(r.center.dx, r.bottom - 10),
-          12,
-          Colors.white,
-          bold: true,
+          rect.translate(dx, 0),
+          t.color,
+          loaded: fly >= 1,
+          wheelSpin: drive * 30,
+          alpha: 1 - drive * drive,
         );
       }
-      if (locked) {
-        _lock(c, r.center, l.pkgSize * 0.7);
-        _text(
+      if (fly < 1) {
+        final k = Curves.easeInOut.transform(fly);
+        final pos = Offset.lerp(
+          boxRect.center,
+          rect.center,
+          k,
+        )!.translate(0, -math.sin(k * math.pi) * l.cell * 0.5);
+        _painter.drawBox(
           c,
-          '${s.unlockIn(i)}',
-          r.center.translate(0, l.pkgSize * 0.6),
-          18,
-          Colors.white,
-          bold: true,
-          outline: true,
-        );
-      }
-      if (hintLane == i) {
-        final pulse = 0.5 + 0.5 * math.sin(_time * 8);
-        _stroke
-          ..color = AppColors.coin.withValues(alpha: 0.6 + 0.4 * pulse)
-          ..strokeWidth = 4;
-        c.drawRRect(
-          RRect.fromRectXY(r.inflate(3 + pulse * 3), 16, 16),
-          _stroke,
+          fly > 0 ? t.color : -1,
+          pos,
+          l.cell * 0.72 * (1 - 0.3 * k),
+          happy: true,
         );
       }
     }
   }
 
-  void _lock(Canvas c, Offset center, double size) {
-    _paint.color = const Color(0xFFF2C94C);
-    final body = Rect.fromCenter(
-      center: center.translate(0, size * 0.15),
-      width: size * 0.8,
-      height: size * 0.6,
-    );
-    c.drawRRect(RRect.fromRectXY(body, 6, 6), _paint);
+  void _renderClues(Canvas c, BoardLayout l, Color fg) {
+    void clue(Offset center, int want, LineState state, double pulse) {
+      final r = l.band * 0.36 * (1 + 0.35 * math.sin(pulse * math.pi));
+      final done = state == LineState.done;
+      final over = state == LineState.over;
+      if (done || over) {
+        _fill.color = done ? AppColors.success : AppColors.danger;
+        c.drawCircle(center, r, _fill);
+      }
+      _text(
+        c,
+        '$want',
+        center,
+        l.band * 0.58,
+        done || over
+            ? Colors.white
+            : fg.withValues(alpha: want == 0 ? 0.35 : 1),
+        bold: true,
+      );
+    }
+
+    for (var i = 0; i < s.size; i++) {
+      clue(
+        l.colClue(i),
+        s.config.colClues[i],
+        inFinale ? LineState.done : s.colState(i),
+        _colPulse[i] ?? 0,
+      );
+      clue(
+        l.rowClue(i),
+        s.config.rowClues[i],
+        inFinale ? LineState.done : s.rowState(i),
+        _rowPulse[i] ?? 0,
+      );
+    }
+  }
+
+  void _cross(Canvas c, Offset center, double r, Color color, double width) {
     _stroke
-      ..color = const Color(0xFFF2C94C)
-      ..strokeWidth = size * 0.12;
-    c.drawArc(
-      Rect.fromCenter(
-        center: center.translate(0, -size * 0.12),
-        width: size * 0.5,
-        height: size * 0.6,
-      ),
-      math.pi,
-      math.pi,
-      false,
-      _stroke,
-    );
+      ..color = color
+      ..strokeWidth = width;
+    c.drawLine(center.translate(-r, -r), center.translate(r, r), _stroke);
+    c.drawLine(center.translate(r, -r), center.translate(-r, r), _stroke);
   }
 
   final Map<String, TextPainter> _textCache = {};
@@ -730,13 +507,11 @@ class BoardComponent extends PositionComponent
     double size,
     Color color, {
     bool bold = false,
-    bool outline = false,
   }) {
-    final key =
-        '$text|${size.toStringAsFixed(1)}|${color.toARGB32()}|$bold|$outline';
+    final key = '$text|${size.toStringAsFixed(1)}|${color.toARGB32()}|$bold';
     var tp = _textCache[key];
     if (tp == null) {
-      if (_textCache.length > 400) _textCache.clear();
+      if (_textCache.length > 300) _textCache.clear();
       tp = TextPainter(
         text: TextSpan(
           text: text,
@@ -744,15 +519,6 @@ class BoardComponent extends PositionComponent
             fontSize: size,
             color: color,
             fontWeight: bold ? FontWeight.w900 : FontWeight.w500,
-            shadows: outline
-                ? [
-                    Shadow(
-                      color: Colors.black.withValues(alpha: color.a * 0.45),
-                      blurRadius: 4,
-                      offset: const Offset(0, 2),
-                    ),
-                  ]
-                : null,
           ),
         ),
         textDirection: TextDirection.ltr,

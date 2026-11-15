@@ -1,114 +1,122 @@
-import 'dart:math' as math;
-
 import 'models.dart';
 import 'stage_config.dart';
 
-/// Turn-based rule engine for one play of a stage.
+/// State of one play of a deduction puzzle.
 ///
-/// Tap a lane → its front package flies to a parked truck of the same color,
-/// or to the shelf. Full trucks depart, the next truck arrives and pulls
-/// matching packages off the shelf, which can fill it again → chain.
+/// The player marks cells as box / cross. There is no fail state and no
+/// timer: the stage is cleared the moment the boxes match the (unique)
+/// solution. Rule violations are reported so the UI can show them, and
+/// "auto" crosses are derived for bookkeeping the player should not have to
+/// do by hand.
 class GameSession {
   GameSession(this.config, {SessionModifiers modifiers = SessionModifiers.none})
-    : shelfCapacity = config.shelf + modifiers.extraShelf,
-      freeUndos = 1 + modifiers.extraUndo {
-    var id = 1;
-    for (var l = 0; l < config.lanes.length; l++) {
-      lanes.add([
-        for (var i = 0; i < config.lanes[l].length; i++)
-          Package(
-            id: id++,
-            color: config.lanes[l][i],
-            hidden: config.hidden.contains('$l:$i') && i > 0,
-          ),
-      ]);
-    }
-    for (var i = 0; i < config.docks; i++) {
-      docks.add(_nextTruck());
-    }
-  }
+    : freeHints = 1 + modifiers.extraHints,
+      _truckAt = {for (final t in config.trucks) t.cell: t},
+      _solution = config.solution.toSet();
 
   final StageConfig config;
-  int shelfCapacity;
-
-  /// Undos available without watching an ad.
-  int freeUndos;
-
-  final List<List<Package>> lanes = [];
-  final List<Truck?> docks = [];
-  final List<Package> shelf = [];
-
-  int _queueIndex = 0;
-  int _truckIds = 1;
+  final Map<Cell, Truck> _truckAt;
+  final Set<Cell> _solution;
+  final Map<Cell, Mark> _marks = {};
+  final List<Map<Cell, Mark>> _history = [];
 
   SessionStatus status = SessionStatus.ready;
-  FailReason? failReason;
 
-  int score = 0;
+  /// Hints available without watching an ad.
+  int freeHints;
+  int hintsUsed = 0;
   int moves = 0;
-  int shipped = 0; // trucks departed
-  int delivered = 0; // packages loaded
-  int shelfPlacements = 0;
-  int maxChain = 0;
-  int undosUsed = 0;
-  int revivesUsed = 0;
 
-  final List<_Snapshot> _history = [];
-  final List<SessionEvent> _events = [];
+  int get size => config.size;
+  bool get isCleared => status == SessionStatus.cleared;
 
   // ---------------------------------------------------------------------------
   // Queries
 
-  bool get isOver =>
-      status == SessionStatus.cleared || status == SessionStatus.failed;
+  bool inside(Cell c) => c.$1 >= 0 && c.$1 < size && c.$2 >= 0 && c.$2 < size;
 
-  int get totalTrucks => config.trucks.length;
+  Truck? truckAt(Cell c) => _truckAt[c];
+  bool isTruck(Cell c) => _truckAt.containsKey(c);
+  Mark markAt(Cell c) => _marks[c] ?? Mark.none;
+  bool isBox(Cell c) => _marks[c] == Mark.box;
 
-  /// Upcoming trucks (not yet parked), in arrival order.
-  List<TruckSpec> get queue => config.trucks.sublist(_queueIndex);
+  Iterable<Cell> get boxes =>
+      _marks.entries.where((e) => e.value == Mark.box).map((e) => e.key);
 
-  int get stars =>
-      status == SessionStatus.cleared ? config.starsFor(shelfPlacements) : 0;
+  int get boxesPlaced => boxes.length;
 
-  bool isLocked(int lane) =>
-      config.locks.any((l) => l.lane == lane && shipped < l.after);
+  int rowCount(int r) => boxes.where((b) => b.$1 == r).length;
+  int colCount(int c) => boxes.where((b) => b.$2 == c).length;
 
-  /// Trucks still needed before [lane] opens (0 if open).
-  int unlockIn(int lane) {
-    var need = 0;
-    for (final l in config.locks) {
-      if (l.lane == lane) need = math.max(need, l.after - shipped);
-    }
-    return need;
+  LineState rowState(int r) => _state(rowCount(r), config.rowClues[r]);
+  LineState colState(int c) => _state(colCount(c), config.colClues[c]);
+
+  static LineState _state(int have, int want) => have == want
+      ? LineState.done
+      : (have > want ? LineState.over : LineState.open);
+
+  bool nextToTruck(Cell c) =>
+      orthogonal.any((d) => isTruck((c.$1 + d.$1, c.$2 + d.$2)));
+
+  bool touchesBox(Cell c) =>
+      around8.any((d) => isBox((c.$1 + d.$1, c.$2 + d.$2)));
+
+  /// Why an unmarked cell can be ruled out by plain bookkeeping, or null.
+  /// Shown as a faint cross so players can focus on real deductions.
+  String? autoCrossReason(Cell c) {
+    if (isTruck(c) || markAt(c) != Mark.none) return null;
+    if (!nextToTruck(c)) return 'トラックのとなりではない';
+    if (touchesBox(c)) return '箱のとなり';
+    if (rowState(c.$1) != LineState.open) return 'この行はもう満杯';
+    if (colState(c.$2) != LineState.open) return 'この列はもう満杯';
+    return null;
   }
 
-  bool canTap(int lane) =>
-      status == SessionStatus.playing &&
-      lane >= 0 &&
-      lane < lanes.length &&
-      lanes[lane].isNotEmpty &&
-      !isLocked(lane);
+  /// A cell where a box is still possible.
+  bool isCandidate(Cell c) =>
+      inside(c) &&
+      !isTruck(c) &&
+      markAt(c) == Mark.none &&
+      autoCrossReason(c) == null;
 
-  bool get canUndo => _history.isNotEmpty && status == SessionStatus.playing;
-
-  bool get shelfDanger => shelf.length >= shelfCapacity - 1;
-
-  /// Dock index a package of [color] would go to right now, or null.
-  int? dockFor(int color) {
-    int? best;
-    for (var i = 0; i < docks.length; i++) {
-      final t = docks[i];
-      if (t == null || t.color != color || t.isFull) continue;
-      if (best == null || t.filled > docks[best]!.filled) best = i;
+  /// Boxes that break a rule right now (shown in red).
+  Set<Cell> get violations {
+    final out = <Cell>{};
+    for (final b in boxes) {
+      if (!nextToTruck(b) ||
+          touchesBox(b) ||
+          rowState(b.$1) == LineState.over ||
+          colState(b.$2) == LineState.over) {
+        out.add(b);
+      }
     }
-    return best;
-  }
-
-  List<SessionEvent> drainEvents() {
-    final out = List<SessionEvent>.of(_events);
-    _events.clear();
     return out;
   }
+
+  /// Boxes that are not part of the solution (used by hints).
+  List<Cell> get wrongBoxes =>
+      boxes.where((b) => !_solution.contains(b)).toList();
+
+  /// Player crosses sitting on a solution cell (used by hints).
+  List<Cell> get wrongCrosses => _marks.entries
+      .where((e) => e.value == Mark.cross && _solution.contains(e.key))
+      .map((e) => e.key)
+      .toList();
+
+  bool inSolution(Cell c) => _solution.contains(c);
+
+  /// Stars: 3 = solved without hints, 2 = up to two hints, 1 = more.
+  int get stars {
+    if (!isCleared) return 0;
+    if (hintsUsed == 0) return 3;
+    return hintsUsed <= 2 ? 2 : 1;
+  }
+
+  int get score => isCleared
+      ? size * size * 10 + (hintsUsed == 0 ? 200 : 0) + config.tier * 50
+      : 0;
+
+  bool get canUndo => _history.isNotEmpty && status == SessionStatus.playing;
 
   // ---------------------------------------------------------------------------
   // Actions
@@ -117,273 +125,57 @@ class GameSession {
     if (status == SessionStatus.ready) status = SessionStatus.playing;
   }
 
-  /// Taps [lane]. Returns false (state unchanged) if not allowed.
-  bool tap(int lane) {
-    if (!canTap(lane)) return false;
-    _history.add(_Snapshot.of(this));
-    moves++;
-    final p = lanes[lane].removeAt(0);
-    p.hidden = false;
-    if (lanes[lane].isNotEmpty && lanes[lane].first.hidden) {
-      lanes[lane].first.hidden = false;
-      _events.add(SessionEvent.reveal(lane));
-    }
+  /// The mark a tap on [c] would produce: none → box → cross → none.
+  Mark nextMark(Cell c) => switch (markAt(c)) {
+    Mark.none => Mark.box,
+    Mark.box => Mark.cross,
+    Mark.cross => Mark.none,
+  };
 
-    final dock = dockFor(p.color);
-    if (dock != null) {
-      _load(p, dock, from: LaneOrigin(lane));
-      _resolveDepartures();
-    } else if (shelf.length < shelfCapacity) {
-      shelf.add(p);
-      shelfPlacements++;
-      _events.add(
-        SessionEvent.move(p, LaneOrigin(lane), ToShelf(shelf.length - 1)),
-      );
+  /// Sets a mark. Returns false (unchanged) if not allowed.
+  bool setMark(Cell c, Mark m) {
+    if (status != SessionStatus.playing || !inside(c) || isTruck(c)) {
+      return false;
+    }
+    if (markAt(c) == m) return false;
+    _history.add(Map.of(_marks));
+    if (_history.length > 200) _history.removeAt(0);
+    if (m == Mark.none) {
+      _marks.remove(c);
     } else {
-      _events.add(SessionEvent.move(p, LaneOrigin(lane), const Overflow()));
-      _fail(FailReason.shelfOverflow);
-      return true;
+      _marks[c] = m;
     }
-    _checkEnd();
+    moves++;
+    _checkCleared();
     return true;
   }
 
-  void _load(Package p, int dock, {required Origin from}) {
-    docks[dock]!.filled++;
-    delivered++;
-    score += 10;
-    _events.add(SessionEvent.move(p, from, ToTruck(dock)));
-  }
+  bool tap(Cell c) => setMark(c, nextMark(c));
 
-  /// Departs full trucks, brings new ones and pulls from the shelf until
-  /// nothing changes. Each departure in one tap raises the chain level.
-  void _resolveDepartures() {
-    var chain = 0;
-    while (true) {
-      final full = docks.indexWhere((t) => t != null && t.isFull);
-      if (full < 0) break;
-      chain++;
-      shipped++;
-      maxChain = math.max(maxChain, chain);
-      score += 100 * chain;
-      final gone = docks[full]!;
-      docks[full] = _nextTruck();
-      _events.add(SessionEvent.depart(full, gone, docks[full], chain));
-      // Arriving trucks take matching packages from the shelf.
-      var i = 0;
-      while (i < shelf.length) {
-        final d = dockFor(shelf[i].color);
-        if (d == null) {
-          i++;
-          continue;
-        }
-        final p = shelf.removeAt(i);
-        _load(p, d, from: ShelfOrigin(i));
-        _events.add(SessionEvent.shelfCompacted());
-      }
-    }
-  }
-
-  Truck? _nextTruck() {
-    if (_queueIndex >= config.trucks.length) return null;
-    final s = config.trucks[_queueIndex++];
-    return Truck(id: _truckIds++, color: s.color, capacity: s.capacity);
-  }
-
-  void _checkEnd() {
-    if (status != SessionStatus.playing) return;
-    if (docks.every((t) => t == null) && _queueIndex >= config.trucks.length) {
-      status = SessionStatus.cleared;
-      score += 200 + 50 * (shelfCapacity - shelf.length);
-      _events.add(const SessionEvent(SessionEventType.cleared));
-      return;
-    }
-    final anyTap = List.generate(lanes.length, (i) => i).any(canTap);
-    if (!anyTap) _fail(FailReason.stuck);
-  }
-
-  void _fail(FailReason r) {
-    status = SessionStatus.failed;
-    failReason = r;
-    _events.add(SessionEvent(SessionEventType.failed, failReason: r));
-  }
-
-  /// Reverts the last tap. Free undos are consumed first; [paid] marks an
-  /// ad-granted undo.
-  bool undo({bool paid = false}) {
+  bool undo() {
     if (!canUndo) return false;
-    if (!paid) {
-      if (freeUndos <= 0) return false;
-      freeUndos--;
+    _marks
+      ..clear()
+      ..addAll(_history.removeLast());
+    return true;
+  }
+
+  void reset() {
+    if (status != SessionStatus.playing || _marks.isEmpty) return;
+    _history.add(Map.of(_marks));
+    _marks.clear();
+  }
+
+  void _checkCleared() {
+    final placed = boxes.toSet();
+    if (placed.length == _solution.length && placed.containsAll(_solution)) {
+      status = SessionStatus.cleared;
     }
-    _history.removeLast().restore(this);
-    undosUsed++;
-    _events.add(const SessionEvent(SessionEventType.undone));
-    return true;
   }
 
-  // ---------------------------------------------------------------------------
-  // Revive (rewarded ad)
-
-  static const int maxRevives = 1;
-
-  bool get canRevive =>
-      status == SessionStatus.failed &&
-      revivesUsed < maxRevives &&
-      _history.isNotEmpty;
-
-  /// Undoes the fatal move and adds one shelf slot for the rest of the stage.
-  bool revive() {
-    if (!canRevive) return false;
-    _history.removeLast().restore(this);
-    status = SessionStatus.playing;
-    failReason = null;
-    revivesUsed++;
-    shelfCapacity++;
-    _events.add(const SessionEvent(SessionEventType.undone));
-    return true;
+  /// Records that a hint was consumed. [paid] = granted by a rewarded ad.
+  void consumeHint({bool paid = false}) {
+    if (!paid && freeHints > 0) freeHints--;
+    hintsUsed++;
   }
-
-  // ---------------------------------------------------------------------------
-  // Solver-facing state key (see solver.dart).
-
-  String stateKey() {
-    final lanePart = lanes.map((l) => l.length).join(',');
-    final shelfPart = (shelf.map((p) => p.color).toList()..sort()).join('');
-    final dockPart =
-        (docks.map((t) => t == null ? '-' : '${t.color}${t.filled}').toList()
-              ..sort())
-            .join('|');
-    return '$lanePart/$shelfPart/$dockPart/$_queueIndex/$shelfCapacity';
-  }
-
-  GameSession clone() {
-    final s = GameSession._empty(config, shelfCapacity, freeUndos);
-    _Snapshot.of(this).restore(s);
-    s.status = status;
-    return s;
-  }
-
-  GameSession._empty(this.config, this.shelfCapacity, this.freeUndos);
-}
-
-class _Snapshot {
-  _Snapshot.of(GameSession s)
-    : lanes = [
-        for (final l in s.lanes) [for (final p in l) p.copy()],
-      ],
-      docks = [for (final t in s.docks) t?.copy()],
-      shelf = [for (final p in s.shelf) p.copy()],
-      queueIndex = s._queueIndex,
-      truckIds = s._truckIds,
-      score = s.score,
-      moves = s.moves,
-      shipped = s.shipped,
-      delivered = s.delivered,
-      shelfPlacements = s.shelfPlacements,
-      maxChain = s.maxChain;
-
-  final List<List<Package>> lanes;
-  final List<Truck?> docks;
-  final List<Package> shelf;
-  final int queueIndex, truckIds, score, moves, shipped, delivered;
-  final int shelfPlacements, maxChain;
-
-  void restore(GameSession s) {
-    s.lanes
-      ..clear()
-      ..addAll([
-        for (final l in lanes) [for (final p in l) p.copy()],
-      ]);
-    s.docks
-      ..clear()
-      ..addAll([for (final t in docks) t?.copy()]);
-    s.shelf
-      ..clear()
-      ..addAll([for (final p in shelf) p.copy()]);
-    s._queueIndex = queueIndex;
-    s._truckIds = truckIds;
-    s.score = score;
-    s.moves = moves;
-    s.shipped = shipped;
-    s.delivered = delivered;
-    s.shelfPlacements = shelfPlacements;
-    s.maxChain = maxChain;
-  }
-}
-
-// -----------------------------------------------------------------------------
-// Events (drive animations and sounds)
-
-sealed class Origin {
-  const Origin();
-}
-
-class LaneOrigin extends Origin {
-  const LaneOrigin(this.lane);
-  final int lane;
-}
-
-class ShelfOrigin extends Origin {
-  const ShelfOrigin(this.slot);
-  final int slot;
-}
-
-enum SessionEventType {
-  move,
-  depart,
-  reveal,
-  shelfCompacted,
-  undone,
-  cleared,
-  failed,
-}
-
-class SessionEvent {
-  const SessionEvent(
-    this.type, {
-    this.package,
-    this.origin,
-    this.destination,
-    this.dock,
-    this.departed,
-    this.arrived,
-    this.chain = 0,
-    this.lane,
-    this.failReason,
-  });
-
-  factory SessionEvent.move(Package p, Origin from, Destination to) =>
-      SessionEvent(
-        SessionEventType.move,
-        package: p,
-        origin: from,
-        destination: to,
-      );
-
-  factory SessionEvent.depart(int dock, Truck gone, Truck? next, int chain) =>
-      SessionEvent(
-        SessionEventType.depart,
-        dock: dock,
-        departed: gone,
-        arrived: next,
-        chain: chain,
-      );
-
-  factory SessionEvent.reveal(int lane) =>
-      SessionEvent(SessionEventType.reveal, lane: lane);
-
-  factory SessionEvent.shelfCompacted() =>
-      const SessionEvent(SessionEventType.shelfCompacted);
-
-  final SessionEventType type;
-  final Package? package;
-  final Origin? origin;
-  final Destination? destination;
-  final int? dock;
-  final Truck? departed;
-  final Truck? arrived;
-  final int chain;
-  final int? lane;
-  final FailReason? failReason;
 }

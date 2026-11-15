@@ -61,6 +61,19 @@ class SaveMigrations {
         'coins': ((j['coins'] as num?) ?? 0).toInt() + refund,
       };
     },
+    // v3: the game became a deduction puzzle with new stages. Stage records
+    // are dropped again and the removed shelf upgrade is refunded.
+    2: (j) {
+      final ups = Map<String, dynamic>.from((j['upgrades'] as Map?) ?? {});
+      final shelf = ((ups.remove('shelf') as num?) ?? 0).toInt();
+      return {
+        ...j,
+        'schemaVersion': 3,
+        'stages': <String, dynamic>{},
+        'upgrades': ups,
+        'coins': ((j['coins'] as num?) ?? 0).toInt() + (shelf > 0 ? 600 : 0),
+      };
+    },
   };
 
   static Map<String, dynamic> migrate(Map<String, dynamic> json) {

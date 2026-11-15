@@ -2,145 +2,113 @@ import 'models.dart';
 
 enum Difficulty { easy, normal, hard }
 
-/// A lane that opens only after [after] trucks have departed.
-class LaneLock {
-  const LaneLock(this.lane, this.after);
-  final int lane;
-  final int after;
-}
-
 /// Immutable puzzle definition, loaded from `assets/stages/stages.json`.
 ///
-/// Layouts are stored explicitly (not generated at runtime) so every stage is
-/// hand-editable and verified solvable by `test/game/stage_catalog_test.dart`.
+/// `solution[i]` is the box that belongs to `trucks[i]`. Row / column clues
+/// are derived from the solution. `tool/gen_stages.py` guarantees the solution
+/// is unique and reachable by deduction (no guessing).
 class StageConfig {
   StageConfig({
     required this.id,
     this.name = '',
     this.difficulty = Difficulty.easy,
-    required this.lanes,
+    required this.size,
     required this.trucks,
-    this.docks = 2,
-    this.shelf = 5,
-    this.hidden = const {},
-    this.locks = const [],
-    this.par = 0,
+    required this.solution,
+    this.tier = 1,
     this.tutorial,
-  });
+  }) : rowClues = List.generate(
+         size,
+         (r) => solution.where((b) => b.$1 == r).length,
+       ),
+       colClues = List.generate(
+         size,
+         (c) => solution.where((b) => b.$2 == c).length,
+       );
 
   final int id;
   final String name;
   final Difficulty difficulty;
 
-  /// Package colors per lane, front (index 0) to back.
-  final List<List<int>> lanes;
+  /// Grid is size x size.
+  final int size;
+  final List<Truck> trucks;
+  final List<Cell> solution;
+  final List<int> rowClues;
+  final List<int> colClues;
 
-  /// Truck queue in arrival order.
-  final List<TruckSpec> trucks;
-
-  /// Number of trucks parked at once.
-  final int docks;
-
-  /// Shelf slots.
-  final int shelf;
-
-  /// Hidden packages as "lane:index" keys.
-  final Set<String> hidden;
-  final List<LaneLock> locks;
-
-  /// Fewest shelf placements a perfect solution needs (computed by the
-  /// solver in `tool/gen_stages.py`). Used for star rating.
-  final int par;
+  /// Hardest deduction technique needed (1 counting, 2 patterns, 3 what-if).
+  final int tier;
   final String? tutorial;
 
-  int get packageCount => lanes.fold(0, (a, l) => a + l.length);
-
-  /// ★3 = at most [par] shelf placements, ★2 = par + 2, otherwise ★1.
-  int starsFor(int shelfPlacements) {
-    if (shelfPlacements <= par) return 3;
-    if (shelfPlacements <= par + 2) return 2;
-    return 1;
-  }
+  int get boxCount => solution.length;
 
   factory StageConfig.fromJson(Map<String, dynamic> j) {
-    final cap = (j['truckCapacity'] as num?)?.toInt() ?? 3;
-    final caps = (j['truckCaps'] as List?)
-        ?.map((e) => (e as num).toInt())
-        .toList();
-    final colors = (j['trucks'] as List)
-        .map((e) => (e as num).toInt())
-        .toList();
     final cfg = StageConfig(
       id: (j['id'] as num).toInt(),
       name: j['name'] as String? ?? '',
       difficulty: Difficulty.values.byName(
         j['difficulty'] as String? ?? 'easy',
       ),
-      lanes: [
-        for (final l in j['lanes'] as List)
-          [for (final c in l as List) (c as num).toInt()],
-      ],
+      size: (j['size'] as num).toInt(),
+      tier: (j['tier'] as num?)?.toInt() ?? 1,
       trucks: [
-        for (var i = 0; i < colors.length; i++)
-          TruckSpec(colors[i], caps != null ? caps[i] : cap),
+        for (final t in j['trucks'] as List)
+          Truck((
+            ((t as List)[0] as num).toInt(),
+            (t[1] as num).toInt(),
+          ), t.length > 2 ? (t[2] as num).toInt() : 0),
       ],
-      docks: (j['docks'] as num?)?.toInt() ?? 2,
-      shelf: (j['shelf'] as num?)?.toInt() ?? 5,
-      hidden: {
-        for (final h in (j['hidden'] as List?) ?? const [])
-          '${(h as List)[0]}:${h[1]}',
-      },
-      locks: [
-        for (final l in (j['locks'] as List?) ?? const [])
-          LaneLock(
-            ((l as Map)['lane'] as num).toInt(),
-            (l['after'] as num).toInt(),
-          ),
+      solution: [
+        for (final b in j['solution'] as List)
+          (((b as List)[0] as num).toInt(), (b[1] as num).toInt()),
       ],
-      par: (j['par'] as num?)?.toInt() ?? 0,
       tutorial: j['tutorial'] as String?,
     );
     cfg.validate();
     return cfg;
   }
 
-  /// Throws [FormatException] for data that would break the game.
+  /// Throws [FormatException] if the stored solution breaks the rules.
   void validate() {
     void check(bool ok, String msg) {
       if (!ok) throw FormatException('Stage $id: $msg');
     }
 
+    bool inside(Cell c) => c.$1 >= 0 && c.$1 < size && c.$2 >= 0 && c.$2 < size;
+
     check(id > 0, 'id must be > 0');
-    check(lanes.isNotEmpty && lanes.length <= 6, 'lanes must be 1..6');
-    check(docks >= 1 && docks <= 4, 'docks must be 1..4');
-    check(shelf >= 1 && shelf <= 8, 'shelf must be 1..8');
-    check(trucks.isNotEmpty, 'trucks must not be empty');
+    check(size >= 3 && size <= 9, 'size must be 3..9');
+    check(trucks.isNotEmpty, 'no trucks');
+    check(trucks.length == solution.length, 'one box per truck required');
+    final truckCells = {for (final t in trucks) t.cell};
+    final boxes = solution.toSet();
+    check(truckCells.length == trucks.length, 'duplicate truck');
+    check(boxes.length == solution.length, 'duplicate box');
+    check(truckCells.every(inside) && boxes.every(inside), 'cell out of grid');
+    check(truckCells.intersection(boxes).isEmpty, 'box on a truck');
     check(
-      trucks.every((t) => t.capacity >= 1 && t.capacity <= 5),
-      'bad capacity',
+      trucks.every((t) => t.color >= 0 && t.color < kColorCount),
+      'bad color',
     );
-    final all = [for (final l in lanes) ...l];
-    check(all.every((c) => c >= 0 && c < kColorCount), 'bad color index');
-    // Every package must have a truck seat and every seat a package.
-    for (var c = 0; c < kColorCount; c++) {
-      final pk = all.where((x) => x == c).length;
-      final seats = trucks
-          .where((t) => t.color == c)
-          .fold(0, (a, t) => a + t.capacity);
-      check(pk == seats, 'color $c: $pk packages but $seats seats');
+    for (var i = 0; i < trucks.length; i++) {
+      final t = trucks[i].cell, b = solution[i];
+      check(
+        (t.$1 - b.$1).abs() + (t.$2 - b.$2).abs() == 1,
+        'box $i is not next to its truck',
+      );
     }
-    for (final l in locks) {
-      check(l.lane >= 0 && l.lane < lanes.length, 'lock lane out of range');
+    for (final a in boxes) {
+      for (final d in around8) {
+        check(!boxes.contains((a.$1 + d.$1, a.$2 + d.$2)), 'boxes touch at $a');
+      }
     }
   }
 }
 
 /// Run-time modifiers from factory upgrades (assist only, never required).
 class SessionModifiers {
-  const SessionModifiers({this.extraShelf = 0, this.extraUndo = 0});
-
-  final int extraShelf;
-  final int extraUndo;
-
+  const SessionModifiers({this.extraHints = 0});
+  final int extraHints;
   static const none = SessionModifiers();
 }
