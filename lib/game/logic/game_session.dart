@@ -65,10 +65,28 @@ class GameSession {
   /// Shown as a faint cross so players can focus on real deductions.
   String? autoCrossReason(Cell c) {
     if (isTruck(c) || markAt(c) != Mark.none) return null;
-    if (!nextToTruck(c)) return 'トラックのとなりではない';
-    if (touchesBox(c)) return '箱のとなり';
-    if (rowState(c.$1) != LineState.open) return 'この行はもう満杯';
-    if (colState(c.$2) != LineState.open) return 'この列はもう満杯';
+    return _ruleReason(c);
+  }
+
+  /// Why a box may not be placed on [c] right now, or null if it may.
+  /// Used to refuse the placement and tell the player which rule says no.
+  String? placeBlockReason(Cell c) {
+    if (!inside(c)) return 'ここには置けません';
+    if (isTruck(c)) return 'トラックの上には置けません';
+    if (isBox(c)) return null;
+    return _ruleReason(c);
+  }
+
+  String? _ruleReason(Cell c) {
+    if (!nextToTruck(c)) return 'トラックの上下左右のとなりにしか置けません';
+    if (touchesBox(c)) return '箱どうしはくっつけられません（ななめもダメ）';
+    if (rowState(c.$1) != LineState.open) {
+      return 'この行はもう数字の数だけ箱があります';
+    }
+    if (colState(c.$2) != LineState.open) {
+      return 'この列はもう数字の数だけ箱があります';
+    }
+    if (!_canPair({...boxes, c})) return 'となりのトラックはもう箱を持っています';
     return null;
   }
 
@@ -82,16 +100,57 @@ class GameSession {
   /// Boxes that break a rule right now (shown in red).
   Set<Cell> get violations {
     final out = <Cell>{};
+    final pairs = pairing;
     for (final b in boxes) {
       if (!nextToTruck(b) ||
           touchesBox(b) ||
           rowState(b.$1) == LineState.over ||
-          colState(b.$2) == LineState.over) {
+          colState(b.$2) == LineState.over ||
+          !pairs.containsKey(b)) {
         out.add(b);
       }
     }
     return out;
   }
+
+  /// Which truck each placed box belongs to: a maximum one-to-one pairing of
+  /// boxes with orthogonally adjacent trucks. Boxes missing from the map have
+  /// no truck left for them.
+  Map<Cell, Cell> get pairing {
+    final cached = _pairingCache;
+    if (cached != null) return cached;
+    final owner = _match(boxes.toList()..sort(_cmp));
+    return _pairingCache = {for (final e in owner.entries) e.value: e.key};
+  }
+
+  Map<Cell, Cell>? _pairingCache;
+
+  static int _cmp(Cell a, Cell b) =>
+      a.$1 != b.$1 ? a.$1.compareTo(b.$1) : a.$2.compareTo(b.$2);
+
+  /// Augmenting-path matching; returns truck -> box.
+  Map<Cell, Cell> _match(Iterable<Cell> list) {
+    final owner = <Cell, Cell>{};
+    bool assign(Cell b, Set<Cell> seen) {
+      for (final d in orthogonal) {
+        final t = (b.$1 + d.$1, b.$2 + d.$2);
+        if (!isTruck(t) || !seen.add(t)) continue;
+        if (!owner.containsKey(t) || assign(owner[t]!, seen)) {
+          owner[t] = b;
+          return true;
+        }
+      }
+      return false;
+    }
+
+    for (final b in list) {
+      assign(b, {});
+    }
+    return owner;
+  }
+
+  /// Whether every box in [set] can get its own adjacent truck.
+  bool _canPair(Set<Cell> set) => _match(set).length == set.length;
 
   /// Boxes that are not part of the solution (used by hints).
   List<Cell> get wrongBoxes =>
@@ -146,6 +205,7 @@ class GameSession {
       _marks[c] = m;
     }
     moves++;
+    _pairingCache = null;
     _checkCleared();
     return true;
   }
@@ -157,6 +217,7 @@ class GameSession {
     _marks
       ..clear()
       ..addAll(_history.removeLast());
+    _pairingCache = null;
     return true;
   }
 
@@ -164,6 +225,7 @@ class GameSession {
     if (status != SessionStatus.playing || _marks.isEmpty) return;
     _history.add(Map.of(_marks));
     _marks.clear();
+    _pairingCache = null;
   }
 
   void _checkCleared() {

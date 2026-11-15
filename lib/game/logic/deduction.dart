@@ -25,11 +25,11 @@ class Deduction {
   static Hint next(GameSession s) {
     final wrong = s.wrongBoxes;
     if (wrong.isNotEmpty) {
-      return Hint(wrong.first, Mark.none, 'この箱はまちがいです。取りのぞきましょう。');
+      return Hint(wrong.first, Mark.none, 'この箱はまちがい。タップして消そう。');
     }
     final wrongX = s.wrongCrosses;
     if (wrongX.isNotEmpty) {
-      return Hint(wrongX.first, Mark.none, 'この×はまちがいです。消しましょう。');
+      return Hint(wrongX.first, Mark.none, 'この×はまちがい。タップして消そう。');
     }
     return _counting(s) ?? _lonelyTruck(s) ?? _linePattern(s) ?? _reveal(s);
   }
@@ -47,8 +47,7 @@ class Deduction {
       ? s.config.rowClues[i] - s.rowCount(i)
       : s.config.colClues[i] - s.colCount(i);
 
-  static String _lineName(bool row, int i) =>
-      row ? '上から${i + 1}行目' : '左から${i + 1}列目';
+  static String _lineName(bool row, int i) => row ? 'この行（横）' : 'この列（たて）';
 
   /// Tier 1: a line whose remaining free cells must all be boxes.
   static Hint? _counting(GameSession s) {
@@ -62,7 +61,7 @@ class Deduction {
           return Hint(
             cands.first,
             Mark.box,
-            '${_lineName(row, i)}はあと$need個。置けるマスもちょうど$need個なので、ここは箱で確定です。',
+            '${_lineName(row, i)}は箱があと$need個。置けるマスも$need個しか残っていない → ここは箱！',
             related: line,
           );
         }
@@ -83,7 +82,7 @@ class Deduction {
         return Hint(
           free.first,
           Mark.box,
-          'このトラックのとなりで箱を置けるのはここだけ。箱で確定です。',
+          'このトラックの箱を置けるマスは、もうここしか残っていない → ここは箱！',
           related: [t.cell],
         );
       }
@@ -126,8 +125,8 @@ class Deduction {
             return Hint(
               c,
               Mark.box,
-              '${_lineName(row, i)}にあと$need個置くには、箱どうしが隣り合わない並べ方しかできません。'
-              'どの並べ方でもここは箱になります。',
+              '${_lineName(row, i)}に箱を$need個、くっつけずに置く方法を全部考えると、'
+              'どの置き方でもここに箱が入る → ここは箱！',
               related: line,
             );
           }
@@ -135,7 +134,7 @@ class Deduction {
             return Hint(
               c,
               Mark.cross,
-              '${_lineName(row, i)}にあと$need個置くとき、ここに置くと残りが入りきりません。ここは×です。',
+              'ここに箱を置くと、${_lineName(row, i)}の残りの箱が入りきらない → ここは×',
               related: line,
             );
           }
@@ -147,6 +146,6 @@ class Deduction {
 
   static Hint _reveal(GameSession s) {
     final cell = s.config.solution.firstWhere((b) => !s.isBox(b));
-    return Hint(cell, Mark.box, 'ここは箱です。「もしここが×だったら…」と先を読むと、どこかで数が合わなくなります。');
+    return Hint(cell, Mark.box, 'ここは箱です。（「もしここが×なら？」と先を読むと、どこかの数字が合わなくなります）');
   }
 }
