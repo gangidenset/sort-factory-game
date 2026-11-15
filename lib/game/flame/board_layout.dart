@@ -1,93 +1,49 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
-/// Screen rectangles for the puzzle board. Pure, so it can be tested on many
-/// screen sizes to ensure nothing overlaps or leaves the screen.
-///
-/// ```
-///  NEXT ▭▭▭▭           (truck queue)
-///  [truck][truck][truck] (docks)
-///  [□][□][□][□][□]      (shelf)
-///  |■| |■| |■| |■|       (lanes; front package on top)
-///  |■| |■| |■| |■|
-/// ```
+import '../logic/models.dart';
+
+/// Screen geometry of the puzzle grid with clue bands on the top and left.
+/// Pure, so it can be tested on many screen sizes.
 class BoardLayout {
-  BoardLayout({
-    required Size size,
-    required int lanes,
-    required int maxDepth,
-    required int docks,
-    required int shelfSlots,
-  }) {
-    final w = size.width, h = size.height;
-    pad = math.max(8.0, w * 0.025);
+  BoardLayout({required Size size, required this.n}) {
+    final pad = math.max(8.0, size.width * 0.03);
+    // Clue band is 0.62 of a cell: solve for the largest cell that fits.
+    final byW = (size.width - pad * 2) / (n + 0.62);
+    final byH = (size.height - pad * 2) / (n + 0.62);
+    cell = math.min(math.min(byW, byH), 72.0);
+    band = cell * 0.62;
+    final total = band + cell * n;
+    final left = (size.width - total) / 2;
+    final top = math.min(pad * 1.5, (size.height - total) / 2);
+    grid = Rect.fromLTWH(left + band, top + band, cell * n, cell * n);
+  }
 
-    queueRect = Rect.fromLTWH(pad, pad * 0.5, w - pad * 2, 26);
+  final int n;
+  late final double cell;
+  late final double band;
+  late final Rect grid;
 
-    final dockTop = queueRect.bottom + pad * 0.5;
-    final dockW = (w - pad * (docks + 1)) / docks;
-    final dockH = math.min(math.min(h * 0.17, 112.0), dockW * 0.75);
-    dockRects = [
-      for (var i = 0; i < docks; i++)
-        Rect.fromLTWH(pad + i * (dockW + pad), dockTop, dockW, dockH),
-    ];
+  Rect cellRect(Cell c) => Rect.fromLTWH(
+    grid.left + c.$2 * cell,
+    grid.top + c.$1 * cell,
+    cell,
+    cell,
+  );
 
-    final slots = math.max(shelfSlots, 1);
-    final slot = math.min(math.min((w - pad * 2) / slots - 6, 54.0), h * 0.08);
-    final shelfW = slots * (slot + 6) - 6;
-    final shelfTop = dockTop + dockH + pad * 1.4;
-    shelfRect = Rect.fromLTWH(
-      (w - shelfW) / 2 - 8,
-      shelfTop,
-      shelfW + 16,
-      slot + 16,
+  Offset colClue(int c) =>
+      Offset(grid.left + (c + 0.5) * cell, grid.top - band / 2);
+  Offset rowClue(int r) =>
+      Offset(grid.left - band / 2, grid.top + (r + 0.5) * cell);
+
+  Rect get bounds =>
+      Rect.fromLTRB(grid.left - band, grid.top - band, grid.right, grid.bottom);
+
+  Cell? cellAt(Offset p) {
+    if (!grid.contains(p)) return null;
+    return (
+      ((p.dy - grid.top) / cell).floor().clamp(0, n - 1),
+      ((p.dx - grid.left) / cell).floor().clamp(0, n - 1),
     );
-    shelfSlotRects = [
-      for (var i = 0; i < slots; i++)
-        Rect.fromLTWH(
-          shelfRect.left + 8 + i * (slot + 6),
-          shelfTop + 8,
-          slot,
-          slot,
-        ),
-    ];
-
-    final laneTop = shelfRect.bottom + pad * 1.4;
-    final laneW = (w - pad * (lanes + 1)) / lanes;
-    final laneH = h - laneTop - pad;
-    laneRects = [
-      for (var i = 0; i < lanes; i++)
-        Rect.fromLTWH(pad + i * (laneW + pad), laneTop, laneW, laneH),
-    ];
-    final depth = math.max(maxDepth, 1);
-    pkgSize = math.min(
-      math.min(laneW * 0.8, 62.0),
-      (laneH - pad) / (depth * 1.08 + 0.1),
-    );
-    pkgStep = pkgSize * 1.08;
   }
-
-  late final double pad;
-  late final Rect queueRect;
-  late final List<Rect> dockRects;
-  late final Rect shelfRect;
-  late final List<Rect> shelfSlotRects;
-  late final List<Rect> laneRects;
-  late final double pkgSize;
-  late final double pkgStep;
-
-  /// Center of the package at [index] (0 = front) in [lane].
-  Offset packageCenter(int lane, int index) {
-    final r = laneRects[lane];
-    return Offset(r.center.dx, r.top + pkgSize * 0.62 + index * pkgStep);
-  }
-
-  int? laneAt(Offset p) {
-    for (var i = 0; i < laneRects.length; i++) {
-      if (laneRects[i].inflate(pad / 2).contains(p)) return i;
-    }
-    return null;
-  }
-
-  List<Rect> get all => [...dockRects, shelfRect, ...laneRects];
 }

@@ -4,7 +4,7 @@
 /// remote config without code changes elsewhere.
 library;
 
-enum UpgradeEffect { shelfSlots, freeUndo, coinBonus }
+enum UpgradeEffect { freeHint, coinBonus }
 
 class UpgradeDef {
   const UpgradeDef({
@@ -33,16 +33,9 @@ const upgradeDefs = [
   UpgradeDef(
     id: 'manual',
     name: '作業マニュアル',
-    description: '無料の「1手戻す」 +1回／ステージ',
-    effect: UpgradeEffect.freeUndo,
+    description: '無料ヒント +1回／ステージ',
+    effect: UpgradeEffect.freeHint,
     costs: [200, 500],
-  ),
-  UpgradeDef(
-    id: 'shelf',
-    name: '棚の増設',
-    description: '棚のスロット +1（全ステージ）',
-    effect: UpgradeEffect.shelfSlots,
-    costs: [600],
   ),
   UpgradeDef(
     id: 'center',
@@ -224,7 +217,7 @@ CosmeticDef? cosmeticById(String id) {
   return null;
 }
 
-enum MissionKind { clears, maxChain, perfectClears, totalScore, deliveries }
+enum MissionKind { clears, perfectClears, totalScore, deliveries }
 
 class MissionDef {
   const MissionDef(
@@ -244,9 +237,14 @@ class MissionDef {
 const missionPool = [
   MissionDef('clear_3', MissionKind.clears, 3, 'ステージを3回クリア'),
   MissionDef('clear_5', MissionKind.clears, 5, 'ステージを5回クリア', reward: 60),
-  MissionDef('chain_2', MissionKind.maxChain, 2, '2連鎖出荷を達成'),
-  MissionDef('chain_3', MissionKind.maxChain, 3, '3連鎖出荷を達成', reward: 60),
-  MissionDef('perfect_2', MissionKind.perfectClears, 2, '★3クリアを2回'),
-  MissionDef('score_5000', MissionKind.totalScore, 5000, '累計スコア5,000'),
-  MissionDef('deliver_80', MissionKind.deliveries, 80, '荷物を80個出荷'),
+  MissionDef('perfect_1', MissionKind.perfectClears, 1, 'ヒントなしで1回クリア'),
+  MissionDef(
+    'perfect_3',
+    MissionKind.perfectClears,
+    3,
+    'ヒントなしで3回クリア',
+    reward: 60,
+  ),
+  MissionDef('score_2000', MissionKind.totalScore, 2000, '累計スコア2,000'),
+  MissionDef('deliver_30', MissionKind.deliveries, 30, '荷物を30個出荷'),
 ];

@@ -163,7 +163,7 @@ class SaveData {
        tutorialsSeen = tutorialsSeen ?? {},
        stats = stats ?? PlayStats();
 
-  static const int currentVersion = 2;
+  static const int currentVersion = 3;
 
   int coins;
   int xp;

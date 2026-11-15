@@ -18,6 +18,9 @@ class PackagePainter {
 
   static const ink = Color(0xFF1F2733);
 
+  /// Color of a box that has not been loaded onto a truck yet (color = -1).
+  static const cardboard = Color(0xFFD9A066);
+
   void drawBox(
     Canvas c,
     int color,
@@ -49,7 +52,9 @@ class PackagePainter {
     _fill.color = Colors.black.withValues(alpha: 0.12 * alpha);
     c.drawRRect(rr.shift(Offset(0, size * 0.06)), _fill);
 
-    final base = hidden ? const Color(0xFFB8C0CC) : packageColors[color];
+    final base = hidden
+        ? const Color(0xFFB8C0CC)
+        : (color < 0 ? cardboard : packageColors[color]);
     _fill.color = base.withValues(alpha: alpha);
     c.drawRRect(rr, _fill);
     // Top highlight.
@@ -207,190 +212,93 @@ class PackagePainter {
     c.drawCircle(center.translate(0, r * 1.25), size * 0.09, _fill);
   }
 
-  /// Truck facing right: cargo box (with seat cells) + cab with a face.
-  void drawTruck(
+  /// Compact truck that fits one grid cell (facing right).
+  void drawCellTruck(
     Canvas c,
-    Rect dock,
-    int color,
-    int capacity,
-    int filled, {
+    Rect cell,
+    int color, {
     double alpha = 1,
-    double bounce = 0,
+    bool loaded = false,
     double wheelSpin = 0,
   }) {
-    final dy = -bounce * dock.height * 0.08;
-    final cargo = _shift(BoardTruck.cargo(dock), dy);
-    final cab = _shift(BoardTruck.cab(dock), dy);
     final col = packageColors[color];
-
-    // Shadow.
+    final w = cell.width, h = cell.height;
+    final cargo = Rect.fromLTWH(
+      cell.left + w * 0.08,
+      cell.top + h * 0.24,
+      w * 0.56,
+      h * 0.44,
+    );
+    final cab = Rect.fromLTWH(
+      cargo.right + w * 0.02,
+      cargo.top + h * 0.1,
+      w * 0.26,
+      h * 0.34,
+    );
     _fill.color = Colors.black.withValues(alpha: 0.12 * alpha);
     c.drawRRect(
       RRect.fromRectXY(
         Rect.fromLTRB(
           cargo.left,
-          cargo.bottom,
+          cargo.bottom + h * 0.02,
           cab.right,
-          cargo.bottom + dock.height * 0.12,
+          cargo.bottom + h * 0.14,
         ),
-        8,
-        8,
+        4,
+        4,
       ),
       _fill,
     );
-
-    // Cab.
-    _fill.color = Color.lerp(col, Colors.black, 0.18)!.withValues(alpha: alpha);
+    _fill.color = Color.lerp(col, Colors.black, 0.2)!.withValues(alpha: alpha);
     c.drawRRect(
       RRect.fromRectAndCorners(
         cab,
-        topRight: Radius.circular(cab.width * 0.45),
-        topLeft: const Radius.circular(4),
-        bottomRight: const Radius.circular(6),
-        bottomLeft: const Radius.circular(4),
+        topRight: Radius.circular(w * 0.1),
+        topLeft: const Radius.circular(2),
+        bottomLeft: const Radius.circular(2),
+        bottomRight: const Radius.circular(3),
       ),
       _fill,
     );
     _fill.color = const Color(0xFFDDF3FF).withValues(alpha: alpha);
-    final win = Rect.fromLTWH(
-      cab.left + cab.width * 0.2,
-      cab.top + cab.height * 0.14,
-      cab.width * 0.62,
-      cab.height * 0.32,
-    );
-    c.drawRRect(RRect.fromRectXY(win, 4, 4), _fill);
-    _fill.color = PackagePainter.ink.withValues(alpha: alpha);
-    c.drawCircle(
-      Offset(
-        win.center.dx - win.width * 0.18,
-        win.center.dy + win.height * 0.05,
+    c.drawRRect(
+      RRect.fromRectXY(
+        Rect.fromLTWH(
+          cab.left + cab.width * 0.25,
+          cab.top + cab.height * 0.15,
+          cab.width * 0.6,
+          cab.height * 0.4,
+        ),
+        2,
+        2,
       ),
-      win.height * 0.13,
       _fill,
     );
-    c.drawCircle(
-      Offset(
-        win.center.dx + win.width * 0.18,
-        win.center.dy + win.height * 0.05,
-      ),
-      win.height * 0.13,
-      _fill,
-    );
-
-    // Cargo box.
-    _fill.color = Colors.white.withValues(alpha: alpha);
-    final cargoRR = RRect.fromRectXY(cargo, 8, 8);
-    c.drawRRect(cargoRR, _fill);
+    _fill.color = (loaded ? col : Colors.white).withValues(alpha: alpha);
+    final rr = RRect.fromRectXY(cargo, w * 0.07, w * 0.07);
+    c.drawRRect(rr, _fill);
     _stroke
       ..color = col.withValues(alpha: alpha)
-      ..strokeWidth = math.max(3, dock.height * 0.05);
-    c.drawRRect(cargoRR, _stroke);
-    _fill.color = col.withValues(alpha: 0.16 * alpha);
-    c.drawRRect(cargoRR.deflate(2), _fill);
-
-    // Seats.
-    final cell = cargo.width / capacity;
-    final box = math.min(cell * 0.8, cargo.height * 0.72);
-    for (var i = 0; i < capacity; i++) {
-      final ctr = Offset(cargo.left + cell * (i + 0.5), cargo.center.dy);
-      if (i < filled) {
-        drawBox(c, color, ctr, box, alpha: alpha, happy: true);
-      } else {
-        _stroke
-          ..color = col.withValues(alpha: 0.45 * alpha)
-          ..strokeWidth = 2;
-        c.drawRRect(
-          RRect.fromRectXY(
-            Rect.fromCenter(center: ctr, width: box, height: box),
-            box * 0.2,
-            box * 0.2,
-          ),
-          _stroke,
-        );
-      }
-    }
-
-    // Wheels.
-    final wy = cargo.bottom + dock.height * 0.06;
+      ..strokeWidth = math.max(2.5, w * 0.06);
+    c.drawRRect(rr, _stroke);
+    if (loaded) _face(c, cargo.center, cargo.height * 1.5, alpha, happy: true);
+    final wy = cargo.bottom + h * 0.07;
     for (final x in [
-      cargo.left + cargo.width * 0.22,
-      cargo.right - cargo.width * 0.12,
+      cargo.left + cargo.width * 0.25,
+      cargo.right - cargo.width * 0.15,
       cab.center.dx,
     ]) {
-      _fill.color = PackagePainter.ink.withValues(alpha: alpha);
-      c.drawCircle(Offset(x, wy), dock.height * 0.1, _fill);
+      _fill.color = ink.withValues(alpha: alpha);
+      c.drawCircle(Offset(x, wy), h * 0.085, _fill);
       _fill.color = const Color(0xFFBFC7D2).withValues(alpha: alpha);
-      c.drawCircle(Offset(x, wy), dock.height * 0.045, _fill);
-      _stroke
-        ..color = PackagePainter.ink.withValues(alpha: alpha)
-        ..strokeWidth = 2;
-      c.drawLine(
-        Offset(x, wy),
+      c.drawCircle(
         Offset(
-          x + math.cos(wheelSpin) * dock.height * 0.045,
-          wy + math.sin(wheelSpin) * dock.height * 0.045,
+          x + math.cos(wheelSpin) * h * 0.02,
+          wy + math.sin(wheelSpin) * h * 0.02,
         ),
-        _stroke,
+        h * 0.035,
+        _fill,
       );
     }
-  }
-
-  static Rect _shift(Rect r, double dy) => r.translate(0, dy);
-
-  /// Tiny truck icon for the queue strip.
-  void drawMiniTruck(
-    Canvas c,
-    Offset center,
-    double h,
-    int color, {
-    double alpha = 1,
-  }) {
-    final col = packageColors[color];
-    final cargo = Rect.fromCenter(
-      center: center.translate(-h * 0.25, 0),
-      width: h * 1.3,
-      height: h * 0.8,
-    );
-    final cab = Rect.fromLTWH(
-      cargo.right + 1,
-      cargo.top + h * 0.2,
-      h * 0.5,
-      h * 0.6,
-    );
-    _fill.color = col.withValues(alpha: alpha);
-    c.drawRRect(RRect.fromRectXY(cargo, 3, 3), _fill);
-    _fill.color = Color.lerp(col, Colors.black, 0.2)!.withValues(alpha: alpha);
-    c.drawRRect(RRect.fromRectXY(cab, 3, 3), _fill);
-  }
-}
-
-/// Geometry shared by the painter and layout for trucks inside a dock rect.
-class BoardTruck {
-  static Rect cargo(Rect dock) => Rect.fromLTWH(
-    dock.left + dock.width * 0.04,
-    dock.top + dock.height * 0.12,
-    dock.width * 0.7,
-    dock.height * 0.62,
-  );
-
-  static Rect cab(Rect dock) {
-    final cg = cargo(dock);
-    return Rect.fromLTWH(
-      cg.right + dock.width * 0.02,
-      cg.top + cg.height * 0.18,
-      dock.width * 0.2,
-      cg.height * 0.82,
-    );
-  }
-
-  static Offset seat(Rect dock, int seat, int capacity) {
-    final cg = cargo(dock);
-    final cell = cg.width / capacity;
-    return Offset(cg.left + cell * (seat + 0.5), cg.center.dy);
-  }
-
-  static double seatBox(Rect dock, int capacity) {
-    final cg = cargo(dock);
-    return math.min(cg.width / capacity * 0.8, cg.height * 0.72);
   }
 }
