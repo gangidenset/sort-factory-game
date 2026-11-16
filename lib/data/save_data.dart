@@ -37,6 +37,10 @@ class Settings {
     this.haptics = true,
     this.interstitialEvery = 4,
     this.showHints = true,
+    this.reminderEnabled = false,
+    this.reminderHour = 19,
+    this.reminderMinute = 30,
+    this.reminderAsked = false,
   });
 
   bool sound;
@@ -46,11 +50,23 @@ class Settings {
   int interstitialEvery;
   bool showHints;
 
+  /// Daily-puzzle reminder notification (opt-in).
+  bool reminderEnabled;
+  int reminderHour;
+  int reminderMinute;
+
+  /// Whether the opt-in offer was already shown (never nag twice).
+  bool reminderAsked;
+
   Map<String, dynamic> toJson() => {
     'sound': sound,
     'haptics': haptics,
     'interstitialEvery': interstitialEvery,
     'showHints': showHints,
+    'reminderEnabled': reminderEnabled,
+    'reminderHour': reminderHour,
+    'reminderMinute': reminderMinute,
+    'reminderAsked': reminderAsked,
   };
 
   factory Settings.fromJson(Map<String, dynamic> j) => Settings(
@@ -58,6 +74,10 @@ class Settings {
     haptics: j['haptics'] as bool? ?? true,
     interstitialEvery: _int(j['interstitialEvery'], 4).clamp(2, 20),
     showHints: j['showHints'] as bool? ?? true,
+    reminderEnabled: j['reminderEnabled'] as bool? ?? false,
+    reminderHour: _int(j['reminderHour'], 19).clamp(0, 23),
+    reminderMinute: _int(j['reminderMinute'], 30).clamp(0, 59),
+    reminderAsked: j['reminderAsked'] as bool? ?? false,
   );
 }
 

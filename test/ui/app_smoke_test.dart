@@ -17,8 +17,14 @@ import 'package:sort_factory/services/ads/ad_service.dart';
 import 'package:sort_factory/services/analytics/analytics.dart';
 import 'package:sort_factory/services/audio/audio_service.dart';
 import 'package:sort_factory/services/iap/purchase_service.dart';
+import 'package:sort_factory/services/notifications/reminder_manager.dart';
+
+import '../services/reminder_test.dart' show FakeReminderService;
+
+late FakeReminderService reminderService;
 
 Future<AppServices> makeServices() async {
+  reminderService = FakeReminderService();
   final analytics = DebugAnalytics();
   final progress = await ProgressController.load(SaveRepository(MemoryStore()));
   return AppServices(
@@ -37,6 +43,11 @@ Future<AppServices> makeServices() async {
     purchases: UnavailablePurchaseService(),
     analytics: analytics,
     audio: AudioService(soundEnabled: () => false, hapticsEnabled: () => false),
+    reminders: ReminderManager(
+      service: reminderService,
+      progress: progress,
+      analytics: analytics,
+    ),
   );
 }
 
@@ -236,5 +247,16 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     expect(copied, contains('SORT FACTORY 今日のパズル'));
     expect(copied, contains('ノーヒント'));
+
+    // First daily clear offers reminders once.
+    expect(find.textContaining('明日のパズルをお知らせしますか'), findsOneWidget);
+    await tester.ensureVisible(find.text('お知らせを受け取る'));
+    await tester.tap(find.text('お知らせを受け取る'));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(reminderService.permissionRequests, 1);
+    expect(svc.progress.data.settings.reminderEnabled, isTrue);
+    // Today is solved, so the first reminder is tomorrow.
+    expect(reminderService.scheduled.first.when.day, isNot(DateTime.now().day));
+    expect(find.textContaining('明日のパズルをお知らせしますか'), findsNothing);
   });
 }

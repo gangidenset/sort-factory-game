@@ -17,6 +17,8 @@ import 'services/ads/admob_service.dart';
 import 'services/analytics/analytics.dart';
 import 'services/audio/audio_service.dart';
 import 'services/iap/purchase_service.dart';
+import 'services/notifications/reminder_manager.dart';
+import 'services/notifications/reminder_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -46,6 +48,12 @@ Future<void> main() async {
     hapticsEnabled: () => progress.data.settings.haptics,
   );
 
+  final reminders = ReminderManager(
+    service: isMobile ? LocalReminderService() : NoReminderService(),
+    progress: progress,
+    analytics: analytics,
+  );
+
   final services = AppServices(
     progress: progress,
     stages: stages,
@@ -58,6 +66,7 @@ Future<void> main() async {
     purchases: purchases,
     analytics: analytics,
     audio: audio,
+    reminders: reminders,
   );
 
   runApp(SortFactoryApp(services: services));
@@ -70,6 +79,8 @@ Future<void> main() async {
     'highest_stage': progress.data.highestCleared,
   });
   await audio.preload();
+  // Re-plans the coming week of reminders (skips days already solved).
+  await reminders.start();
   await purchases.initialize();
   await adService.initialize();
 }

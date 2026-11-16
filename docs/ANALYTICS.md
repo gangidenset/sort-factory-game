@@ -14,6 +14,10 @@
 | `daily_start` | `day`, `attempt` | 今日のパズル開始 |
 | `daily_clear` | `day`, `hints`, `seconds`, `streak`, `first` | 今日のパズルをクリア |
 | `daily_share` | `day` | 結果をコピー |
+| `reminder_opt_in` | `granted` | 通知をオンにした（OSの許可結果） |
+| `reminder_declined` / `reminder_opt_out` | — | 提案を断った／オフにした |
+| `reminder_time` | `hour`, `minute` | 時刻変更 |
+| `reminder_open` | `cold` | 通知から起動（cold=アプリ未起動から） |
 | `stage_retry` | `stage` | リトライ |
 | `stage_quit` | `stage`, `placed`, `seconds` | 解かずに退出（＝詰まった指標） |
 | `hint_used` | `stage`, `n` | ヒント使用 |
@@ -36,6 +40,8 @@
 | 課金率 | `purchase_complete` のユニークユーザー ÷ ユーザー |
 | デイリー参加率 | `daily_start` のユニークユーザー ÷ DAU（習慣化の先行指標） |
 | 連続日数の分布 | `daily_clear.streak` |
+| 通知オプトイン率 | `reminder_opt_in.granted=true` ÷ 提案表示数 |
+| 通知経由の起動率 | `reminder_open` ÷ 予約数（目安） |
 | ARPDAU | （広告収益: AdMob管理画面 + 課金収益: ストア）÷ DAU |
 | LTV | ARPDAU × 平均継続日数（リテンションカーブから推定） |
 

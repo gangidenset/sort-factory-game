@@ -60,6 +60,27 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   /// The first stages teach the rules: hints there are free and do not
   /// cost stars.
   bool get _isDaily => widget.dailyDate != null;
+
+  /// Show the one-time "remind me tomorrow?" card on the daily clear panel.
+  bool _offerReminder = false;
+
+  Future<void> _answerReminder(bool yes) async {
+    final r = _svc.reminders;
+    setState(() => _offerReminder = false);
+    if (!yes) {
+      await r.decline();
+      return;
+    }
+    final ok = await r.enable();
+    if (!mounted) return;
+    showSnack(
+      context,
+      ok
+          ? '毎日${r.timeLabel}にお知らせします（設定で変更できます）'
+          : '通知が許可されませんでした。スマホの設定から許可できます',
+    );
+  }
+
   int _dailyStreak = 0;
 
   bool get _practice => !_isDaily && _stage.id <= 3;
@@ -251,10 +272,13 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         'streak': streak,
         'first': reward.firstClear,
       });
+      // Today is done: today's reminder is no longer needed.
+      await _svc.reminders.refresh();
       if (mounted) {
         setState(() {
           _reward = reward;
           _dailyStreak = streak;
+          _offerReminder = _svc.reminders.shouldOffer;
         });
       }
       return;
@@ -610,6 +634,13 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
               label: const Text('広告を見てコイン2倍'),
             ),
         ],
+        if (_offerReminder) ...[
+          const SizedBox(height: 8),
+          _ReminderOffer(
+            time: _svc.reminders.timeLabel,
+            onAnswer: _answerReminder,
+          ),
+        ],
         const SizedBox(height: 8),
         FilledButton.icon(
           onPressed: _copyResult,
@@ -717,6 +748,61 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       ],
     );
   }
+}
+
+/// One-time opt-in card for daily reminders.
+class _ReminderOffer extends StatelessWidget {
+  const _ReminderOffer({required this.time, required this.onAnswer});
+  final String time;
+  final void Function(bool yes) onAnswer;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(12),
+    decoration: BoxDecoration(
+      color: const Color(0xFFE3F0FF),
+      borderRadius: BorderRadius.circular(14),
+    ),
+    child: Column(
+      children: [
+        Row(
+          children: [
+            const Icon(
+              Icons.notifications_active_rounded,
+              color: AppColors.primary,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '明日のパズルをお知らせしますか？\n毎日$timeに1回だけ（解いた日は届きません）',
+                style: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  height: 1.4,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: TextButton(
+                onPressed: () => onAnswer(false),
+                child: const Text('今はしない'),
+              ),
+            ),
+            Expanded(
+              child: FilledButton(
+                onPressed: () => onAnswer(true),
+                child: const Text('お知らせを受け取る'),
+              ),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
 }
 
 /// Rule reminder, or the explanation of the current hint.

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../app/services.dart';
 import '../services/ads/ad_config.dart';
 import '../services/analytics/analytics.dart';
+import '../ui/widgets.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -30,9 +31,10 @@ class SettingsScreen extends StatelessWidget {
                 value: s.haptics,
                 onChanged: (v) => p.updateSettings((s) => s.haptics = v),
               ),
+              _ReminderSettings(),
               SwitchListTile(
-                title: const Text('序盤のヒント表示'),
-                subtitle: const Text('ステージ1〜2で正しい仕分け先を光らせます'),
+                title: const Text('ステージ1の案内'),
+                subtitle: const Text('ステージ1で次に置くマスを光らせて説明します'),
                 value: s.showHints,
                 onChanged: (v) => p.updateSettings((s) => s.showHints = v),
               ),
@@ -111,6 +113,56 @@ class _DebugPanel extends StatelessWidget {
               style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
             ),
           ),
+      ],
+    );
+  }
+}
+
+/// Daily-puzzle reminder switch and time.
+class _ReminderSettings extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final r = context.services.reminders;
+    if (!r.supported) {
+      return const SwitchListTile(
+        title: Text('今日のパズルのお知らせ'),
+        subtitle: Text('アプリ版で使えます（Web版では通知できません）'),
+        value: false,
+        onChanged: null,
+      );
+    }
+    return Column(
+      children: [
+        SwitchListTile(
+          title: const Text('今日のパズルのお知らせ'),
+          subtitle: const Text('毎日1回だけ。解いた日は届きません'),
+          value: r.enabled,
+          onChanged: (on) async {
+            if (!on) {
+              await r.disable();
+              return;
+            }
+            final ok = await r.enable();
+            if (!ok && context.mounted) {
+              showSnack(context, '通知が許可されていません。スマホの設定から許可してください');
+            }
+          },
+        ),
+        ListTile(
+          enabled: r.enabled,
+          title: const Text('お知らせの時刻'),
+          trailing: Text(
+            r.timeLabel,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+          ),
+          onTap: () async {
+            final t = await showTimePicker(
+              context: context,
+              initialTime: TimeOfDay(hour: r.hour, minute: r.minute),
+            );
+            if (t != null) await r.setTime(t.hour, t.minute);
+          },
+        ),
       ],
     );
   }
