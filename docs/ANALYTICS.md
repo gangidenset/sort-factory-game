@@ -18,6 +18,7 @@
 | `reminder_declined` / `reminder_opt_out` | — | 提案を断った／オフにした |
 | `reminder_time` | `hour`, `minute` | 時刻変更 |
 | `reminder_open` | `cold` | 通知から起動（cold=アプリ未起動から） |
+| `past_unlock` | `day`, `method`(ad/coins) | 過去問を開放 |
 | `stage_retry` | `stage` | リトライ |
 | `stage_quit` | `stage`, `placed`, `seconds` | 解かずに退出（＝詰まった指標） |
 | `hint_used` | `stage`, `n` | ヒント使用 |

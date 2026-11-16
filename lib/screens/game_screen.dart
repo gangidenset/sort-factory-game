@@ -61,6 +61,10 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   /// cost stars.
   bool get _isDaily => widget.dailyDate != null;
 
+  /// A past daily opened from the calendar (no streak, small reward).
+  bool get _isLate =>
+      _isDaily && _stage.id < DailyCatalog.dayKey(DateTime.now());
+
   /// Show the one-time "remind me tomorrow?" card on the daily clear panel.
   bool _offerReminder = false;
 
@@ -278,7 +282,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         setState(() {
           _reward = reward;
           _dailyStreak = streak;
-          _offerReminder = _svc.reminders.shouldOffer;
+          _offerReminder = !_isLate && _svc.reminders.shouldOffer;
         });
       }
       return;
@@ -543,9 +547,9 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     final time = '${secs ~/ 60}:${(secs % 60).toString().padLeft(2, '0')}';
     final hints = _session.hintsUsed;
     return [
-      'SORT FACTORY 今日のパズル ${DailyCatalog.label(d)}',
+      'SORT FACTORY ${_isLate ? '' : '今日の'}パズル ${DailyCatalog.label(d)}',
       '✅ $time ${hints == 0 ? 'ノーヒント' : 'ヒント$hints回'}',
-      if (_dailyStreak > 1) '🔥 $_dailyStreak日連続',
+      if (!_isLate && _dailyStreak > 1) '🔥 $_dailyStreak日連続',
       S.shareUrl,
     ].join('\n');
   }
@@ -561,7 +565,12 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     final secs = _clock.elapsed.inSeconds;
     return _panel(
       children: [
-        _title('今日のパズル クリア！', color: AppColors.success),
+        _title(
+          _isLate
+              ? '${DailyCatalog.label(widget.dailyDate!)}のパズル クリア！'
+              : '今日のパズル クリア！',
+          color: AppColors.success,
+        ),
         const SizedBox(height: 4),
         Text(
           DailyCatalog.label(widget.dailyDate!),
@@ -587,23 +596,30 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         ),
         const SizedBox(height: 12),
         if (reward != null) ...[
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(
-                Icons.local_fire_department_rounded,
-                color: Color(0xFFFF7A45),
-                size: 28,
-              ),
-              Text(
-                '$_dailyStreak日連続',
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w900,
+          if (_isLate)
+            const Text(
+              '過去のパズルは連続日数には入りません',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.black54, fontSize: 12),
+            )
+          else
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(
+                  Icons.local_fire_department_rounded,
+                  color: Color(0xFFFF7A45),
+                  size: 28,
                 ),
-              ),
-            ],
-          ),
+                Text(
+                  '$_dailyStreak日連続',
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ],
+            ),
           const SizedBox(height: 6),
           if (reward.firstClear)
             Row(
@@ -622,7 +638,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
             )
           else
             const Text(
-              '今日の報酬は受け取り済みです',
+              'この日の報酬は受け取り済みです',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.black54),
             ),

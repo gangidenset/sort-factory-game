@@ -290,37 +290,83 @@ class ProgressController extends ChangeNotifier {
 
   bool get todaysPuzzleSolved => data.dailyPuzzles.containsKey(today);
 
-  /// Consecutive days with a solved daily puzzle, ending today (or yesterday
+  /// Solved on the day itself (counts toward the streak).
+  bool _onTime(int day) => data.dailyPuzzles[day]?.late == false;
+
+  static DateTime _date(int day) =>
+      DateTime(day ~/ 10000, (day ~/ 100) % 100, day % 100);
+
+  /// Consecutive days solved on the day itself, ending today (or yesterday
   /// if today's is still open, so the streak isn't shown as lost mid-day).
+  /// Puzzles solved later from the calendar never repair a streak.
   int get dailyStreak {
-    var d = DateTime(today ~/ 10000, (today ~/ 100) % 100, today % 100);
-    if (!data.dailyPuzzles.containsKey(Economy.dayKey(d))) {
+    var d = _date(today);
+    if (!_onTime(Economy.dayKey(d))) {
       d = DateTime(d.year, d.month, d.day - 1);
     }
     var n = 0;
-    while (data.dailyPuzzles.containsKey(Economy.dayKey(d))) {
+    while (_onTime(Economy.dayKey(d))) {
       n++;
       d = DateTime(d.year, d.month, d.day - 1);
     }
     return n;
   }
 
-  /// Solved flags for the last [days] days, oldest first (for the card).
+  /// On-time solved flags for the last [days] days, oldest first.
   List<bool> recentDaily(int days) {
-    final t = DateTime(today ~/ 10000, (today ~/ 100) % 100, today % 100);
+    final t = _date(today);
     return [
       for (var i = days - 1; i >= 0; i--)
-        data.dailyPuzzles.containsKey(
-          Economy.dayKey(DateTime(t.year, t.month, t.day - i)),
-        ),
+        _onTime(Economy.dayKey(DateTime(t.year, t.month, t.day - i))),
     ];
   }
 
   /// Daily coins: 50, +10 per streak day up to +70.
   static int dailyCoins(int streak) => 50 + 10 * (streak - 1).clamp(0, 7);
 
+  // ---- past puzzles (calendar) ----------------------------------------------
+
+  /// How far back the calendar reaches.
+  static const pastDays = 28;
+
+  /// Coins to open a missed day (alternative to a rewarded ad).
+  static const pastUnlockCost = 100;
+
+  /// Reward for solving a past puzzle the first time.
+  static const pastReward = 20;
+
+  /// Whether [day] is a past day inside the calendar window.
+  bool isPastInWindow(int day) {
+    if (day >= today) return false;
+    final t = _date(today);
+    final first = Economy.dayKey(DateTime(t.year, t.month, t.day - pastDays));
+    return day >= first;
+  }
+
+  /// A day can be played if it is today, already solved, or opened.
+  bool canPlayDaily(int day) =>
+      day == today ||
+      data.dailyPuzzles.containsKey(day) ||
+      (isPastInWindow(day) && data.unlockedPastDailies.contains(day));
+
+  /// Opens a missed past day. With [payWithCoins] it costs [pastUnlockCost];
+  /// otherwise the caller has already shown a rewarded ad.
+  Future<bool> unlockPastDaily(int day, {required bool payWithCoins}) async {
+    if (!isPastInWindow(day) || canPlayDaily(day)) return false;
+    if (payWithCoins) {
+      if (data.coins < pastUnlockCost) return false;
+      data.coins -= pastUnlockCost;
+    }
+    data.unlockedPastDailies.add(day);
+    // Forget unlocks that fell out of the window.
+    data.unlockedPastDailies.removeWhere((d) => !isPastInWindow(d));
+    await _commit();
+    return true;
+  }
+
   /// Records a solved daily puzzle for [day]. Rewards are paid only the
-  /// first time each day; replays just keep the best time.
+  /// first time each day; replays just keep the best time. Days before
+  /// today count as late (small fixed reward, no streak).
   Future<(RewardSummary, int)> recordDaily({
     required int day,
     required StageResult result,
@@ -328,6 +374,7 @@ class ProgressController extends ChangeNotifier {
   }) async {
     final levelBefore = level;
     final existing = data.dailyPuzzles[day];
+    final late = day < today;
     var coins = 0;
     var xp = 0;
     final secs = result.seconds.round();
@@ -336,6 +383,7 @@ class ProgressController extends ChangeNotifier {
         seconds: secs,
         hints: hints,
         stars: result.stars,
+        late: late,
       );
       // Keep the save small: drop records older than ~400 days.
       if (data.dailyPuzzles.length > 400) {
@@ -344,9 +392,8 @@ class ProgressController extends ChangeNotifier {
           data.dailyPuzzles.remove(k);
         }
       }
-      coins =
-          (dailyCoins(dailyStreak) * (1 + 0.1 * data.upgradeLevel('center')))
-              .round();
+      final base = late ? pastReward : dailyCoins(dailyStreak);
+      coins = (base * (1 + 0.1 * data.upgradeLevel('center'))).round();
       xp = Economy.stageXp(score: result.score, cleared: true);
       data.coins += coins;
       data.xp += xp;
@@ -355,7 +402,7 @@ class ProgressController extends ChangeNotifier {
         ..totalDeliveries += result.deliveries
         ..totalPlaySeconds += secs
         ..clearsSinceInterstitial += 1;
-      _trackMissions(result, dailyPuzzle: true);
+      _trackMissions(result, dailyPuzzle: !late);
     } else {
       if (secs < existing.seconds) existing.seconds = secs;
       if (result.stars > existing.stars) existing.stars = result.stars;
