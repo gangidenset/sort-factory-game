@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
 
@@ -16,6 +18,15 @@ import '../ui/widgets.dart';
 
 enum _Phase { tutorial, playing, paused, cleared }
 
+/// What the panel under the board is saying.
+enum _MsgKind { hint, guide, blocked }
+
+class _Msg {
+  const _Msg(this.kind, this.text);
+  final _MsgKind kind;
+  final String text;
+}
+
 class GameScreen extends StatefulWidget {
   const GameScreen({super.key, required this.stage});
   final StageConfig stage;
@@ -33,7 +44,8 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   bool _coinsDoubled = false;
   bool _busy = false;
   bool _initialized = false;
-  String? _hintText;
+  _Msg? _msg;
+  Timer? _msgTimer;
   final _clock = Stopwatch();
   final _hud = ValueNotifier(0);
 
@@ -43,6 +55,12 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   /// The first stages teach the rules: hints there are free and do not
   /// cost stars.
   bool get _practice => _stage.id <= 3;
+
+  bool get _finale => _game.boardReady && _game.board.inFinale;
+
+  /// Stage 1 walks the player through the solution, one explained step at
+  /// a time ("tap the glowing cell").
+  bool get _guided => _stage.id == 1 && _svc.progress.data.settings.showHints;
 
   @override
   void initState() {
@@ -62,6 +80,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _msgTimer?.cancel();
     _hud.dispose();
     super.dispose();
   }
@@ -82,10 +101,12 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       boxStyle: progress.data.equippedBox,
       onCue: _onCue,
       onSolved: _onSolved,
+      onBlocked: _onBlocked,
     );
     _reward = null;
     _coinsDoubled = false;
-    _hintText = null;
+    _msg = null;
+    _msgTimer?.cancel();
     _clock
       ..reset()
       ..stop();
@@ -104,6 +125,8 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     _phase = _Phase.playing;
     _session.start();
     _clock.start();
+    // Runs inside setup/build: set the message directly, no setState.
+    if (_guided) _msg = _guideMsg();
     final svc = _svc;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       svc.progress.recordAttempt(_stage.id);
@@ -131,11 +154,58 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       case BoardCue.shipDone:
         audio.feedback(Sfx.clear);
     }
-    // The hinted cell was handled: go back to the rule reminder.
-    if (_hintText != null && _game.board.hint == null && mounted) {
-      setState(() => _hintText = null);
+    if (cue == BoardCue.box || cue == BoardCue.cross || cue == BoardCue.erase) {
+      if (_guided && !_session.isCleared) {
+        _guide();
+      } else if (_msg?.kind == _MsgKind.hint &&
+          (!_game.boardReady || _game.board.hint == null)) {
+        // The hinted cell was handled: back to the rule reminder.
+        _say(null);
+      } else if (_msg?.kind == _MsgKind.blocked) {
+        _say(null);
+      }
     }
+    if (_session.isCleared && _msg != null) _say(null);
     _hud.value++;
+  }
+
+  void _say(_Msg? msg, {Duration? clearAfter}) {
+    _msgTimer?.cancel();
+    if (!mounted) return;
+    setState(() => _msg = msg);
+    if (clearAfter != null) {
+      _msgTimer = Timer(clearAfter, () {
+        if (!mounted) return;
+        // After a refusal, go back to whatever guidance was showing.
+        if (_guided && !_session.isCleared) {
+          _guide();
+        } else {
+          setState(() => _msg = null);
+        }
+      });
+    }
+  }
+
+  /// Guided stage: always show the next logical step with its reason.
+  void _guide() => _say(_guideMsg());
+
+  _Msg _guideMsg() {
+    final h = Deduction.next(_session);
+    _game.showHint(h);
+    final text = switch (h.mark) {
+      Mark.box => '光っているマスをタップ！\n${h.reason}',
+      Mark.cross => '光っているマスを2回タップして×に。\n${h.reason}',
+      Mark.none => h.reason,
+    };
+    return _Msg(_MsgKind.guide, text);
+  }
+
+  void _onBlocked(String reason) {
+    _svc.audio.feedback(Sfx.wrong);
+    _say(
+      _Msg(_MsgKind.blocked, 'ここには置けません：$reason'),
+      clearAfter: const Duration(milliseconds: 2600),
+    );
   }
 
   StageResult _result() => StageResult(
@@ -164,7 +234,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   }
 
   void _pause() {
-    if (_phase != _Phase.playing || _game.board.inFinale) return;
+    if (_phase != _Phase.playing || _finale) return;
     _clock.stop();
     _game.pauseEngine();
     setState(() => _phase = _Phase.paused);
@@ -221,9 +291,10 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   }
 
   void _undo() {
-    if (_game.board.inFinale || !_session.undo()) return;
+    if (_finale || !_session.undo()) return;
     _svc.audio.play(Sfx.tap);
     _game.refresh();
+    if (_guided) _guide();
     _hud.value++;
   }
 
@@ -231,10 +302,11 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     _session.reset();
     _game.refresh();
     _resume();
+    if (_guided) _guide();
   }
 
   Future<void> _hint() async {
-    if (_phase != _Phase.playing || _game.board.inFinale) return;
+    if (_phase != _Phase.playing || _finale) return;
     if (!_practice) {
       final free = _session.freeHints > 0;
       if (!free && !await _watchAd(RewardPlacement.hint)) return;
@@ -246,7 +318,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       'stage': _stage.id,
       'n': _session.hintsUsed,
     });
-    setState(() => _hintText = hint.reason);
+    _say(_Msg(_MsgKind.hint, hint.reason));
   }
 
   Future<void> _doubleCoins() async {
@@ -292,7 +364,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
                   Expanded(
                     child: GameWidget(key: ObjectKey(_game), game: _game),
                   ),
-                  _BottomPanel(hintText: _hintText, skin: skin),
+                  _BottomPanel(msg: _msg, skin: skin),
                 ],
               ),
             ),
@@ -495,57 +567,125 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
 
 /// Rule reminder, or the explanation of the current hint.
 class _BottomPanel extends StatelessWidget {
-  const _BottomPanel({required this.hintText, required this.skin});
-  final String? hintText;
+  const _BottomPanel({required this.msg, required this.skin});
+  final _Msg? msg;
   final FactorySkin skin;
 
   @override
   Widget build(BuildContext context) {
-    final hint = hintText;
-    return Container(
+    final m = msg;
+    final (bg, icon, iconColor) = switch (m?.kind) {
+      _MsgKind.blocked => (
+        const Color(0xFFFFE3E3),
+        Icons.block_rounded,
+        AppColors.danger,
+      ),
+      _MsgKind.guide => (
+        const Color(0xFFE3F0FF),
+        Icons.touch_app_rounded,
+        AppColors.primary,
+      ),
+      _MsgKind.hint => (
+        const Color(0xFFFFF4D6),
+        Icons.lightbulb_rounded,
+        AppColors.coin,
+      ),
+      null => (
+        Colors.white.withValues(alpha: skin.isDark ? 0.12 : 0.85),
+        null,
+        null,
+      ),
+    };
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
       width: double.infinity,
+      constraints: const BoxConstraints(minHeight: 96),
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: hint != null
-            ? const Color(0xFFFFF4D6)
-            : Colors.white.withValues(alpha: skin.isDark ? 0.12 : 0.85),
+        color: bg,
         borderRadius: BorderRadius.circular(14),
       ),
-      child: hint != null
+      child: m != null
           ? Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(Icons.lightbulb_rounded, color: AppColors.coin),
+                Icon(icon, color: iconColor),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    hint,
+                    m.text,
                     style: const TextStyle(
-                      fontSize: 14,
-                      height: 1.4,
+                      fontSize: 14.5,
+                      height: 1.45,
                       color: AppColors.ink,
-                      fontWeight: FontWeight.w600,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
                 ),
               ],
             )
-          : DefaultTextStyle(
+          : _RuleCard(color: skin.onBackground),
+    );
+  }
+}
+
+/// The three rules, each with a tiny picture.
+class _RuleCard extends StatelessWidget {
+  const _RuleCard({required this.color});
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget row(List<Widget> icons, String text) => Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          SizedBox(width: 84, child: Row(children: icons)),
+          Expanded(
+            child: Text(
+              text,
               style: TextStyle(
-                fontSize: 12.5,
-                height: 1.5,
-                color: skin.onBackground.withValues(alpha: 0.8),
-              ),
-              child: const Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('① 箱は、トラックの上下左右のとなりに1つずつ'),
-                  Text('② 箱どうしは、ななめでも隣り合わない'),
-                  Text('③ 外の数字 ＝ その行・列に入る箱の数'),
-                ],
+                fontSize: 13,
+                color: color.withValues(alpha: 0.85),
+                fontWeight: FontWeight.w600,
               ),
             ),
+          ),
+        ],
+      ),
+    );
+    const truck = Icon(
+      Icons.local_shipping_rounded,
+      size: 20,
+      color: AppColors.primary,
+    );
+    const box = Icon(
+      Icons.inventory_2_rounded,
+      size: 18,
+      color: Color(0xFFD9A066),
+    );
+    final no = Icon(
+      Icons.close_rounded,
+      size: 16,
+      color: AppColors.danger.withValues(alpha: 0.9),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        row(const [truck, box], 'トラックのとなりに箱を1つずつ'),
+        row([box, no, box], '箱どうしはくっつけない（ななめも）'),
+        row([
+          Text(
+            '2',
+            style: TextStyle(fontWeight: FontWeight.w900, color: color),
+          ),
+          const SizedBox(width: 4),
+          const Icon(Icons.arrow_forward_rounded, size: 16),
+          box,
+          box,
+        ], '数字＝その列・行の箱の数'),
+      ],
     );
   }
 }

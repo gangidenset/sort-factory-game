@@ -95,7 +95,8 @@ void main() {
     await setPhone(tester, const Size(390, 844));
     final svc = await tester.runAsync(makeServices);
     final game = await openStage1(tester, svc!);
-    expect(find.textContaining('外の数字'), findsOneWidget); // rule panel
+    // Stage 1 is guided: the panel tells the player what to tap.
+    expect(find.textContaining('光っているマスをタップ'), findsOneWidget);
     final session = game.session as GameSession;
     for (final box in session.config.solution) {
       await tapCell(tester, game, box);
@@ -159,5 +160,29 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     expect(game.paused, isFalse);
     expect(find.text('ポーズ'), findsNothing);
+  });
+
+  testWidgets('tapping a forbidden cell explains why and places nothing', (
+    tester,
+  ) async {
+    await setPhone(tester, const Size(390, 844));
+    final svc = await tester.runAsync(makeServices);
+    final game = await openStage1(tester, svc!);
+    final session = game.session as GameSession;
+    final n = session.size;
+    final cell =
+        [
+          for (var r = 0; r < n; r++)
+            for (var c = 0; c < n; c++) (r, c),
+        ].firstWhere(
+          (c) => !session.isTruck(c) && session.placeBlockReason(c) != null,
+        );
+    await tapCell(tester, game, cell);
+    expect(session.markAt(cell), Mark.none);
+    expect(find.textContaining('ここには置けません'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 3));
+    expect(find.textContaining('ここには置けません'), findsNothing);
+    // Guidance comes back after the refusal message.
+    expect(find.textContaining('光っているマス'), findsOneWidget);
   });
 }

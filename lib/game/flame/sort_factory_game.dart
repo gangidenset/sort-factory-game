@@ -24,6 +24,7 @@ class SortFactoryGame extends FlameGame {
     required this.boxStyle,
     required this.onCue,
     required this.onSolved,
+    required this.onBlocked,
   });
 
   final GameSession session;
@@ -37,21 +38,40 @@ class SortFactoryGame extends FlameGame {
   /// Called once the shipping finale has finished playing.
   final VoidCallback onSolved;
 
-  late final BoardComponent board;
+  /// Called when the player tries to put a box where a rule forbids it,
+  /// with the reason in plain words.
+  final void Function(String reason) onBlocked;
+
+  BoardComponent? _board;
+  BoardComponent get board => _board!;
 
   @override
   Color backgroundColor() => skin.background;
 
   @override
   Future<void> onLoad() async {
-    board = BoardComponent();
+    _board = BoardComponent()..hint = _pendingHint;
     add(board);
   }
 
-  void showHint(Hint hint) => board.hint = hint;
+  Hint? _pendingHint;
+
+  /// Highlights a hint cell (safe to call before the board is loaded).
+  void showHint(Hint? hint) {
+    final b = _board;
+    if (b != null) {
+      b.hint = hint;
+    } else {
+      _pendingHint = hint;
+    }
+  }
+
+  bool get boardReady => _board != null;
 
   /// Call after undo / reset / hint applied from outside.
-  void refresh() => board.afterChange(silent: true);
+  void refresh() {
+    _board?.afterChange(silent: true);
+  }
 }
 
 class _Particle {
@@ -75,6 +95,7 @@ class BoardComponent extends PositionComponent
 
   // Small pop animations keyed by cell / line.
   final Map<Cell, double> _pop = {};
+  final Map<Cell, double> _blocked = {};
   final Map<int, double> _rowPulse = {};
   final Map<int, double> _colPulse = {};
   late List<LineState> _rowStates;
@@ -163,8 +184,21 @@ class BoardComponent extends PositionComponent
   // ---------------------------------------------------------------------------
   // Input
 
-  void _apply(Cell c, Mark m) {
-    if (inFinale || !s.setMark(c, m)) return;
+  /// Applies [m] to [c]. A box on a forbidden cell is refused; with
+  /// [explain] the player is told which rule says no.
+  void _apply(Cell c, Mark m, {bool explain = true}) {
+    if (inFinale) return;
+    if (m == Mark.box) {
+      final reason = s.placeBlockReason(c);
+      if (reason != null) {
+        if (explain) {
+          _blocked[c] = 1;
+          game.onBlocked(reason);
+        }
+        return;
+      }
+    }
+    if (!s.setMark(c, m)) return;
     _pop[c] = 1;
     if (hint?.cell == c) hint = null;
     game.onCue(switch (m) {
@@ -217,7 +251,7 @@ class BoardComponent extends PositionComponent
     // never overwrites a different mark by accident.
     final cur = s.markAt(c);
     if (paint == Mark.none ? cur != Mark.none : cur == Mark.none) {
-      _apply(c, paint);
+      _apply(c, paint, explain: false);
     }
   }
 
@@ -241,7 +275,7 @@ class BoardComponent extends PositionComponent
   @override
   void update(double dt) {
     _time += dt;
-    for (final m in [_pop, _rowPulse, _colPulse]) {
+    for (final m in [_pop, _rowPulse, _colPulse, _blocked]) {
       for (final k in m.keys.toList()) {
         final v = m[k]! - dt * 4;
         if (v <= 0) {
@@ -326,6 +360,7 @@ class BoardComponent extends PositionComponent
 
     final related = hint?.related.toSet() ?? const <Cell>{};
     final bad = inFinale ? const <Cell>{} : s.violations;
+    final pairs = inFinale ? const <Cell, Cell>{} : s.pairing;
 
     for (var r = 0; r < n; r++) {
       for (var col = 0; col < n; col++) {
@@ -342,6 +377,11 @@ class BoardComponent extends PositionComponent
           _fill.color = AppColors.coin.withValues(alpha: 0.22);
           c.drawRRect(RRect.fromRectXY(inner, 6, 6), _fill);
         }
+        final blocked = _blocked[cell] ?? 0;
+        if (blocked > 0) {
+          _fill.color = AppColors.danger.withValues(alpha: 0.35 * blocked);
+          c.drawRRect(RRect.fromRectXY(inner, 6, 6), _fill);
+        }
         if (s.isTruck(cell) || inFinale) continue;
 
         final mark = s.markAt(cell);
@@ -349,9 +389,10 @@ class BoardComponent extends PositionComponent
         switch (mark) {
           case Mark.box:
             final scale = 1 + 0.25 * math.sin(pop * math.pi);
+            final truck = pairs[cell];
             _painter.drawBox(
               c,
-              -1,
+              truck == null ? -1 : s.truckAt(truck)!.color,
               rect.center,
               l.cell * 0.72 * scale,
               happy: !bad.contains(cell),
@@ -384,6 +425,7 @@ class BoardComponent extends PositionComponent
       }
     }
 
+    if (!inFinale) _renderLinks(c, l, pairs);
     _renderTrucks(c, l);
     _renderClues(c, l, fg);
 
@@ -410,13 +452,28 @@ class BoardComponent extends PositionComponent
     }
   }
 
+  /// Colored bar joining each box to the truck it belongs to, so the
+  /// "one box per truck" rule is visible at a glance.
+  void _renderLinks(Canvas c, BoardLayout l, Map<Cell, Cell> pairs) {
+    pairs.forEach((box, truck) {
+      final color = packageColors[s.truckAt(truck)!.color];
+      final a = l.cellRect(box).center, b = l.cellRect(truck).center;
+      _stroke
+        ..color = color.withValues(alpha: 0.55)
+        ..strokeWidth = l.cell * 0.16;
+      c.drawLine(Offset.lerp(a, b, 0.3)!, Offset.lerp(a, b, 0.62)!, _stroke);
+    });
+  }
+
   void _renderTrucks(Canvas c, BoardLayout l) {
     final f = _finale;
+    final loaded = f == null ? s.pairing.values.toSet() : const <Cell>{};
     for (var i = 0; i < s.config.trucks.length; i++) {
       final t = s.config.trucks[i];
       final rect = l.cellRect(t.cell);
       if (f == null) {
         _painter.drawCellTruck(c, rect, t.color);
+        if (loaded.contains(t.cell)) _check(c, rect);
         continue;
       }
       // Finale: box i hops into truck i, then the truck drives off.
@@ -488,6 +545,24 @@ class BoardComponent extends PositionComponent
         _rowPulse[i] ?? 0,
       );
     }
+  }
+
+  /// Small green check on a truck that already has its box.
+  void _check(Canvas c, Rect cell) {
+    final r = cell.width * 0.15;
+    final ctr = Offset(cell.right - r * 1.1, cell.top + r * 1.1);
+    _fill.color = AppColors.success;
+    c.drawCircle(ctr, r, _fill);
+    _stroke
+      ..color = Colors.white
+      ..strokeWidth = r * 0.35;
+    c.drawPath(
+      Path()
+        ..moveTo(ctr.dx - r * 0.5, ctr.dy)
+        ..lineTo(ctr.dx - r * 0.1, ctr.dy + r * 0.4)
+        ..lineTo(ctr.dx + r * 0.55, ctr.dy - r * 0.4),
+      _stroke,
+    );
   }
 
   void _cross(Canvas c, Offset center, double r, Color color, double width) {

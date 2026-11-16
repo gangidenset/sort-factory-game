@@ -125,7 +125,7 @@ void main() {
       expect(s.autoCrossReason((1, 2)), isNotNull); // no truck neighbour
       expect(s.isCandidate((0, 0)), isTrue);
       s.setMark((2, 2), Mark.box);
-      expect(s.autoCrossReason((3, 3)), '箱のとなり');
+      expect(s.autoCrossReason((3, 3)), contains('くっつけ'));
       expect(s.isCandidate((1, 0)), isFalse); // row 1 has clue 0
     });
 
@@ -137,6 +137,55 @@ void main() {
       s.setMark((0, 0), Mark.box);
       s.setMark((1, 1), Mark.box); // touches (0,0) diagonally, row 1 clue 0
       expect(s.violations, containsAll([(0, 0), (1, 1)]));
+    });
+  });
+
+  group('placement rules', () {
+    test('forbidden cells are refused with a reason', () {
+      final s = play();
+      expect(s.placeBlockReason((0, 1)), contains('トラックの上'));
+      expect(s.placeBlockReason((1, 2)), contains('となり'));
+      expect(s.placeBlockReason((1, 0)), contains('行')); // row clue 0
+      s.setMark((0, 0), Mark.box);
+      expect(s.placeBlockReason((1, 1)), isNotNull); // touches (0,0)
+      expect(s.placeBlockReason((0, 0)), isNull); // already a box
+      expect(s.placeBlockReason((2, 2)), isNull);
+    });
+
+    test('a truck that already has its box blocks a second one', () {
+      final c = StageConfig(
+        id: 1,
+        size: 5,
+        trucks: const [Truck((2, 2), 0), Truck((4, 1), 1), Truck((2, 4), 2)],
+        solution: const [(1, 2), (4, 2), (3, 4)],
+      )..validate();
+      final s = play(c);
+      expect(s.placeBlockReason((3, 2)), isNull);
+      s.setMark((1, 2), Mark.box); // truck (2,2) now has its box
+      expect(s.placeBlockReason((3, 2)), contains('トラックはもう箱'));
+      expect(s.pairing, {(1, 2): (2, 2)});
+    });
+
+    test('pairing assigns each box its own truck', () {
+      final s = play();
+      for (final b in small().solution) {
+        s.setMark(b, Mark.box);
+      }
+      final p = s.pairing;
+      expect(p.length, 3);
+      expect(p.values.toSet().length, 3);
+      for (final e in p.entries) {
+        final d = (e.key.$1 - e.value.$1).abs() + (e.key.$2 - e.value.$2).abs();
+        expect(d, 1);
+      }
+    });
+
+    test('pairing refreshes after undo', () {
+      final s = play();
+      s.setMark((0, 0), Mark.box);
+      expect(s.pairing, isNotEmpty);
+      s.undo();
+      expect(s.pairing, isEmpty);
     });
   });
 
@@ -223,7 +272,7 @@ void main() {
       final h = Deduction.logical(s)!;
       expect(h.cell, (0, 0));
       expect(h.mark, Mark.box);
-      expect(h.reason, contains('並べ方'));
+      expect(h.reason, contains('置き方'));
     });
   });
 }
