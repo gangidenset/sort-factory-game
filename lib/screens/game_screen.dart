@@ -2,12 +2,14 @@ import 'dart:async';
 
 import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app/services.dart';
 import '../data/progress_controller.dart';
 import '../game/flame/sort_factory_game.dart';
 import '../game/logic/game_session.dart';
 import '../game/logic/models.dart';
+import '../game/logic/daily.dart';
 import '../game/logic/deduction.dart';
 import '../game/logic/stage_config.dart';
 import '../services/ads/ad_service.dart';
@@ -28,8 +30,11 @@ class _Msg {
 }
 
 class GameScreen extends StatefulWidget {
-  const GameScreen({super.key, required this.stage});
+  const GameScreen({super.key, required this.stage, this.dailyDate});
   final StageConfig stage;
+
+  /// Set when playing the daily puzzle of this (local) date.
+  final DateTime? dailyDate;
 
   @override
   State<GameScreen> createState() => _GameScreenState();
@@ -54,13 +59,17 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
 
   /// The first stages teach the rules: hints there are free and do not
   /// cost stars.
-  bool get _practice => _stage.id <= 3;
+  bool get _isDaily => widget.dailyDate != null;
+  int _dailyStreak = 0;
+
+  bool get _practice => !_isDaily && _stage.id <= 3;
 
   bool get _finale => _game.boardReady && _game.board.inFinale;
 
   /// Stage 1 walks the player through the solution, one explained step at
   /// a time ("tap the glowing cell").
-  bool get _guided => _stage.id == 1 && _svc.progress.data.settings.showHints;
+  bool get _guided =>
+      !_isDaily && _stage.id == 1 && _svc.progress.data.settings.showHints;
 
   @override
   void initState() {
@@ -129,6 +138,13 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     if (_guided) _msg = _guideMsg();
     final svc = _svc;
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_isDaily) {
+        svc.analytics.log('daily_start', {
+          'day': _stage.id,
+          'attempt': _attempt,
+        });
+        return;
+      }
       svc.progress.recordAttempt(_stage.id);
       svc.analytics.log('stage_start', {
         'stage': _stage.id,
@@ -222,6 +238,27 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     if (!mounted || _phase == _Phase.cleared) return;
     _clock.stop();
     setState(() => _phase = _Phase.cleared);
+    if (_isDaily) {
+      final (reward, streak) = await _svc.progress.recordDaily(
+        day: _stage.id,
+        result: _result(),
+        hints: _session.hintsUsed,
+      );
+      _svc.analytics.log('daily_clear', {
+        'day': _stage.id,
+        'hints': _session.hintsUsed,
+        'seconds': _clock.elapsed.inSeconds,
+        'streak': streak,
+        'first': reward.firstClear,
+      });
+      if (mounted) {
+        setState(() {
+          _reward = reward;
+          _dailyStreak = streak;
+        });
+      }
+      return;
+    }
     final reward = await _svc.progress.recordResult(_result());
     _svc.analytics.log('stage_clear', {
       'stage': _stage.id,
@@ -475,7 +512,124 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     ],
   );
 
+  /// Short spoiler-free result text people can paste into chats / SNS.
+  String _shareText() {
+    final d = widget.dailyDate!;
+    final secs = _clock.elapsed.inSeconds;
+    final time = '${secs ~/ 60}:${(secs % 60).toString().padLeft(2, '0')}';
+    final hints = _session.hintsUsed;
+    return [
+      'SORT FACTORY 今日のパズル ${DailyCatalog.label(d)}',
+      '✅ $time ${hints == 0 ? 'ノーヒント' : 'ヒント$hints回'}',
+      if (_dailyStreak > 1) '🔥 $_dailyStreak日連続',
+      S.shareUrl,
+    ].join('\n');
+  }
+
+  Future<void> _copyResult() async {
+    await Clipboard.setData(ClipboardData(text: _shareText()));
+    _svc.analytics.log('daily_share', {'day': _stage.id});
+    if (mounted) showSnack(context, '結果をコピーしました。SNSやLINEに貼りつけて共有できます');
+  }
+
+  Widget _dailyClearOverlay() {
+    final reward = _reward;
+    final secs = _clock.elapsed.inSeconds;
+    return _panel(
+      children: [
+        _title('今日のパズル クリア！', color: AppColors.success),
+        const SizedBox(height: 4),
+        Text(
+          DailyCatalog.label(widget.dailyDate!),
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            color: Colors.black54,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Text(
+          '${secs ~/ 60}:${(secs % 60).toString().padLeft(2, '0')}',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 40, fontWeight: FontWeight.w900),
+        ),
+        Text(
+          _session.hintsUsed == 0 ? 'ノーヒント！' : 'ヒント ${_session.hintsUsed}回',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: _session.hintsUsed == 0 ? AppColors.coin : Colors.black54,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 12),
+        if (reward != null) ...[
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(
+                Icons.local_fire_department_rounded,
+                color: Color(0xFFFF7A45),
+                size: 28,
+              ),
+              Text(
+                '$_dailyStreak日連続',
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (reward.firstClear)
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.monetization_on, color: AppColors.coin),
+                const SizedBox(width: 4),
+                Text(
+                  '+${_coinsDoubled ? reward.coins * 2 : reward.coins}',
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            )
+          else
+            const Text(
+              '今日の報酬は受け取り済みです',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.black54),
+            ),
+          const SizedBox(height: 10),
+          if (reward.firstClear && !_coinsDoubled && _svc.ads.rewardedAvailable)
+            FilledButton.tonalIcon(
+              onPressed: _busy ? null : _doubleCoins,
+              icon: const Icon(Icons.smart_display),
+              label: const Text('広告を見てコイン2倍'),
+            ),
+        ],
+        const SizedBox(height: 8),
+        FilledButton.icon(
+          onPressed: _copyResult,
+          icon: const Icon(Icons.ios_share_rounded),
+          label: const Text('結果をコピーして共有'),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton(onPressed: _exit, child: const Text('タイトルへ')),
+        const SizedBox(height: 6),
+        const Text(
+          '明日もまた新しいパズルが届きます',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.black54, fontSize: 12),
+        ),
+      ],
+    );
+  }
+
   Widget _clearOverlay() {
+    if (_isDaily) return _dailyClearOverlay();
     final reward = _reward;
     final hasNext = _svc.stages.nextOf(_stage.id) != null;
     final stars = _session.stars;
@@ -732,7 +886,9 @@ class _Hud extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'STAGE ${stage.id}  ${stage.name}',
+                      stage.id > 100000
+                          ? '今日のパズル  ${stage.name.replaceFirst('デイリー ', '')}'
+                          : 'STAGE ${stage.id}  ${stage.name}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(color: fg, fontWeight: FontWeight.w900),

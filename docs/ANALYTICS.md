@@ -11,6 +11,9 @@
 | `app_open` | `days_since_install`, `highest_stage` | 起動時 |
 | `stage_start` | `stage`, `attempt` | プレイ開始 |
 | `stage_clear` | `stage`, `stars`, `hints`, `moves`, `seconds` | クリア（フィナーレ後） |
+| `daily_start` | `day`, `attempt` | 今日のパズル開始 |
+| `daily_clear` | `day`, `hints`, `seconds`, `streak`, `first` | 今日のパズルをクリア |
+| `daily_share` | `day` | 結果をコピー |
 | `stage_retry` | `stage` | リトライ |
 | `stage_quit` | `stage`, `placed`, `seconds` | 解かずに退出（＝詰まった指標） |
 | `hint_used` | `stage`, `n` | ヒント使用 |
@@ -31,6 +34,8 @@
 | リワード視聴率 | `rewarded_complete` ÷ DAU（placement別） |
 | インタースティシャル表示回数 | `interstitial_shown` / DAU |
 | 課金率 | `purchase_complete` のユニークユーザー ÷ ユーザー |
+| デイリー参加率 | `daily_start` のユニークユーザー ÷ DAU（習慣化の先行指標） |
+| 連続日数の分布 | `daily_clear.streak` |
 | ARPDAU | （広告収益: AdMob管理画面 + 課金収益: ストア）÷ DAU |
 | LTV | ARPDAU × 平均継続日数（リテンションカーブから推定） |
 

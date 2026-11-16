@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 
 import '../data/progress_controller.dart';
+import '../game/logic/daily.dart';
 import '../game/logic/stage_repository.dart';
 import '../services/ads/ad_manager.dart';
 import '../services/analytics/analytics.dart';
@@ -12,6 +13,7 @@ class AppServices {
   AppServices({
     required this.progress,
     required this.stages,
+    required this.daily,
     required this.ads,
     required this.purchases,
     required this.analytics,
@@ -20,6 +22,7 @@ class AppServices {
 
   final ProgressController progress;
   final StageCatalog stages;
+  final DailyCatalog daily;
   final AdManager ads;
   final PurchaseService purchases;
   final Analytics analytics;

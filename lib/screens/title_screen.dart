@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../app/services.dart';
 import '../economy/economy.dart';
+import '../game/logic/daily.dart';
 import '../ui/palette.dart';
 import '../ui/strings.dart';
 import '../ui/widgets.dart';
@@ -78,6 +79,8 @@ class TitleScreen extends StatelessWidget {
                             ),
                           ),
                           const Spacer(),
+                          const _DailyCard(),
+                          const SizedBox(height: 10),
                           _MissionCard(),
                           const SizedBox(height: 16),
                           SizedBox(
@@ -239,6 +242,162 @@ class _MenuButton extends StatelessWidget {
       ),
     ),
   );
+}
+
+/// Today's puzzle: the daily habit hook. Shows the date, difficulty,
+/// streak and the last 7 days.
+class _DailyCard extends StatelessWidget {
+  const _DailyCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final svc = context.services;
+    final p = svc.progress;
+    final now = DateTime.now();
+    final rec = p.dailyRecord(DailyCatalog.dayKey(now));
+    final streak = p.dailyStreak;
+    final week = p.recentDaily(7);
+    final solved = rec != null;
+
+    void open() {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) =>
+              GameScreen(stage: svc.daily.forDate(now), dailyDate: now),
+        ),
+      );
+    }
+
+    return Material(
+      color: solved ? Colors.white : const Color(0xFFFFF4D6),
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: open,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.event_available_rounded,
+                            color: AppColors.primary,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 6),
+                          const Text(
+                            '今日のパズル',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w900,
+                              fontSize: 16,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            DailyCatalog.label(now),
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: Colors.black54,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2,
+                            ),
+                            margin: const EdgeInsets.only(right: 8),
+                            decoration: BoxDecoration(
+                              color: AppColors.primary.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              DailyCatalog.levelOf(now),
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.primary,
+                              ),
+                            ),
+                          ),
+                          const Icon(
+                            Icons.local_fire_department_rounded,
+                            color: Color(0xFFFF7A45),
+                            size: 18,
+                          ),
+                          Text(
+                            streak > 0 ? '$streak日連続' : '毎日1問',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 13,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          for (final done in week)
+                            Container(
+                              width: 10,
+                              height: 10,
+                              margin: const EdgeInsets.only(right: 4),
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: done
+                                    ? AppColors.success
+                                    : Colors.black12,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              if (solved)
+                Column(
+                  children: [
+                    const Icon(
+                      Icons.check_circle_rounded,
+                      color: AppColors.success,
+                      size: 28,
+                    ),
+                    Text(
+                      '${rec.seconds ~/ 60}:${(rec.seconds % 60).toString().padLeft(2, '0')}',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                )
+              else
+                FilledButton(
+                  style: FilledButton.styleFrom(minimumSize: const Size(0, 44)),
+                  onPressed: open,
+                  child: const Text('挑戦'),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _MissionCard extends StatelessWidget {

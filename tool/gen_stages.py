@@ -327,7 +327,47 @@ def build(spec, seed):
         if count_solutions(spec['n'], trucks, rows, cols) != 1:
             continue
         return trucks, boxes, rows, cols
-    raise SystemExit('could not build %s' % spec['name'])
+    raise SystemExit('could not build %s' % spec.get('name', spec))
+
+
+# Daily puzzles: difficulty by weekday (Monday = 0 ... Sunday = 6).
+DAILY_WEEKDAY = [
+    dict(n=6, k=7, tier=1),   # Mon
+    dict(n=6, k=8, tier=2),   # Tue
+    dict(n=7, k=10, tier=2),  # Wed
+    dict(n=7, k=11, tier=2),  # Thu
+    dict(n=7, k=10, tier=3),  # Fri
+    dict(n=8, k=13, tier=3),  # Sat
+    dict(n=8, k=14, tier=3),  # Sun
+]
+DAILY_PER_WEEKDAY = 53  # ~1 year before repeating
+
+
+def build_daily(root):
+    """assets/stages/daily.json: 7 weekday pools, all unique & deducible."""
+    pools = []
+    seen = set()
+    for wd, spec in enumerate(DAILY_WEEKDAY):
+        pool = []
+        seed = 50000 + wd * 10007
+        while len(pool) < DAILY_PER_WEEKDAY:
+            seed += 1
+            trucks, boxes, rows, cols = build(spec, seed)
+            key = tuple(sorted(trucks))
+            if key in seen:
+                continue
+            seen.add(key)
+            rng = random.Random(seed)
+            pool.append({
+                'size': spec['n'],
+                'tier': spec['tier'],
+                'trucks': [[r, c, rng.randrange(6)] for r, c in trucks],
+                'solution': [[r, c] for r, c in boxes],
+            })
+        pools.append(pool)
+        print('daily weekday %d: %d puzzles' % (wd, len(pool)), flush=True)
+    with open(os.path.join(root, 'assets', 'stages', 'daily.json'), 'w', encoding='utf-8') as f:
+        json.dump({'version': 1, 'weekdays': pools}, f, separators=(',', ':'))
 
 
 def main():
@@ -355,6 +395,7 @@ def main():
     root = os.path.join(os.path.dirname(__file__), '..')
     with open(os.path.join(root, 'assets', 'stages', 'stages.json'), 'w', encoding='utf-8') as f:
         json.dump({'version': 3, 'stages': out}, f, ensure_ascii=False, separators=(',', ':'))
+    build_daily(root)
     with open(os.path.join(root, 'docs', 'balance_report.txt'), 'w', encoding='utf-8') as f:
         f.write('# tool/gen_stages.py: every stage has a unique solution and is solvable by deduction.\n'
                 '# tier 1 = counting, 2 = line patterns, 3 = "what if" look-ahead\n')

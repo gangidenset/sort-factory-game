@@ -61,6 +61,25 @@ class Settings {
   );
 }
 
+/// Result of one day's daily puzzle.
+class DailyPuzzleRecord {
+  DailyPuzzleRecord({this.seconds = 0, this.hints = 0, this.stars = 0});
+
+  /// Best (lowest) solve time.
+  int seconds;
+  int hints;
+  int stars;
+
+  Map<String, dynamic> toJson() => {'s': seconds, 'h': hints, 'st': stars};
+
+  factory DailyPuzzleRecord.fromJson(Map<String, dynamic> j) =>
+      DailyPuzzleRecord(
+        seconds: _int(j['s']),
+        hints: _int(j['h']),
+        stars: _int(j['st']).clamp(0, 3),
+      );
+}
+
 /// Daily mission progress for one day.
 class DailyState {
   DailyState({
@@ -155,7 +174,9 @@ class SaveData {
     Set<String>? tutorialsSeen,
     this.daily,
     PlayStats? stats,
+    Map<int, DailyPuzzleRecord>? dailyPuzzles,
   }) : stages = stages ?? {},
+       dailyPuzzles = dailyPuzzles ?? {},
        upgrades = upgrades ?? {},
        unlocked = unlocked ?? {'skin_default', 'box_default'},
        settings = settings ?? Settings(),
@@ -182,6 +203,10 @@ class SaveData {
   final Set<String> tutorialsSeen;
   DailyState? daily;
   final PlayStats stats;
+
+  /// Solved daily puzzles by local day (yyyymmdd). Additive field: older
+  /// saves simply start empty, so no migration is needed.
+  final Map<int, DailyPuzzleRecord> dailyPuzzles;
 
   StageRecord record(int stageId) =>
       stages.putIfAbsent(stageId, StageRecord.new);
@@ -215,6 +240,7 @@ class SaveData {
     'tutorialsSeen': tutorialsSeen.toList()..sort(),
     'daily': daily?.toJson(),
     'stats': stats.toJson(),
+    'dailyPuzzles': dailyPuzzles.map((k, v) => MapEntry('$k', v.toJson())),
   };
 
   String encode() => jsonEncode(toJson());
@@ -222,6 +248,15 @@ class SaveData {
   /// Parses an already-migrated JSON map. Unknown keys are ignored and missing
   /// keys fall back to defaults, so additive changes need no migration.
   factory SaveData.fromJson(Map<String, dynamic> j) {
+    final dailyPuzzles = <int, DailyPuzzleRecord>{};
+    (j['dailyPuzzles'] as Map?)?.forEach((k, v) {
+      final day = int.tryParse('$k');
+      if (day != null && v is Map) {
+        dailyPuzzles[day] = DailyPuzzleRecord.fromJson(
+          v.cast<String, dynamic>(),
+        );
+      }
+    });
     final stages = <int, StageRecord>{};
     (j['stages'] as Map?)?.forEach((k, v) {
       final id = int.tryParse('$k');
@@ -254,6 +289,7 @@ class SaveData {
       stats: j['stats'] is Map
           ? PlayStats.fromJson((j['stats'] as Map).cast<String, dynamic>())
           : null,
+      dailyPuzzles: dailyPuzzles,
     );
   }
 }
