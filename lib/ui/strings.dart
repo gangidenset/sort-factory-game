@@ -13,6 +13,9 @@ class S {
   static const settings = '設定';
   static const missions = 'デイリーミッション';
 
+  /// Link appended to shared results (playtest URL until the store launch).
+  static const shareUrl = 'https://gangidenset.github.io/sort-factory-game/';
+
   static const easy = 'EASY';
   static const normal = 'NORMAL';
   static const hard = 'HARD';

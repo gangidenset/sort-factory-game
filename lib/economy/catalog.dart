@@ -217,7 +217,7 @@ CosmeticDef? cosmeticById(String id) {
   return null;
 }
 
-enum MissionKind { clears, perfectClears, totalScore, deliveries }
+enum MissionKind { clears, perfectClears, totalScore, deliveries, dailyPuzzle }
 
 class MissionDef {
   const MissionDef(
@@ -237,6 +237,7 @@ class MissionDef {
 const missionPool = [
   MissionDef('clear_3', MissionKind.clears, 3, 'ステージを3回クリア'),
   MissionDef('clear_5', MissionKind.clears, 5, 'ステージを5回クリア', reward: 60),
+  MissionDef('daily_1', MissionKind.dailyPuzzle, 1, '今日のパズルを解く'),
   MissionDef('perfect_1', MissionKind.perfectClears, 1, 'ヒントなしで1回クリア'),
   MissionDef(
     'perfect_3',

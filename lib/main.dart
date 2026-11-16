@@ -9,6 +9,7 @@ import 'app/app.dart';
 import 'app/services.dart';
 import 'data/progress_controller.dart';
 import 'data/save_repository.dart';
+import 'game/logic/daily.dart';
 import 'game/logic/stage_repository.dart';
 import 'services/ads/ad_manager.dart';
 import 'services/ads/ad_service.dart';
@@ -31,6 +32,10 @@ Future<void> main() async {
     await rootBundle.loadString('assets/stages/stages.json'),
   );
 
+  final daily = DailyCatalog.fromJsonString(
+    await rootBundle.loadString('assets/stages/daily.json'),
+  );
+
   final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
   final AdService adService = isMobile ? AdMobService() : NoAdService();
   final PurchaseService purchases = isMobile
@@ -44,6 +49,7 @@ Future<void> main() async {
   final services = AppServices(
     progress: progress,
     stages: stages,
+    daily: daily,
     ads: AdManager(
       service: adService,
       progress: progress,

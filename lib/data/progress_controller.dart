@@ -284,6 +284,103 @@ class ProgressController extends ChangeNotifier {
   }
 
   // ---------------------------------------------------------------------------
+  // Daily puzzle
+
+  DailyPuzzleRecord? dailyRecord(int day) => data.dailyPuzzles[day];
+
+  bool get todaysPuzzleSolved => data.dailyPuzzles.containsKey(today);
+
+  /// Consecutive days with a solved daily puzzle, ending today (or yesterday
+  /// if today's is still open, so the streak isn't shown as lost mid-day).
+  int get dailyStreak {
+    var d = DateTime(today ~/ 10000, (today ~/ 100) % 100, today % 100);
+    if (!data.dailyPuzzles.containsKey(Economy.dayKey(d))) {
+      d = DateTime(d.year, d.month, d.day - 1);
+    }
+    var n = 0;
+    while (data.dailyPuzzles.containsKey(Economy.dayKey(d))) {
+      n++;
+      d = DateTime(d.year, d.month, d.day - 1);
+    }
+    return n;
+  }
+
+  /// Solved flags for the last [days] days, oldest first (for the card).
+  List<bool> recentDaily(int days) {
+    final t = DateTime(today ~/ 10000, (today ~/ 100) % 100, today % 100);
+    return [
+      for (var i = days - 1; i >= 0; i--)
+        data.dailyPuzzles.containsKey(
+          Economy.dayKey(DateTime(t.year, t.month, t.day - i)),
+        ),
+    ];
+  }
+
+  /// Daily coins: 50, +10 per streak day up to +70.
+  static int dailyCoins(int streak) => 50 + 10 * (streak - 1).clamp(0, 7);
+
+  /// Records a solved daily puzzle for [day]. Rewards are paid only the
+  /// first time each day; replays just keep the best time.
+  Future<(RewardSummary, int)> recordDaily({
+    required int day,
+    required StageResult result,
+    required int hints,
+  }) async {
+    final levelBefore = level;
+    final existing = data.dailyPuzzles[day];
+    var coins = 0;
+    var xp = 0;
+    final secs = result.seconds.round();
+    if (existing == null) {
+      data.dailyPuzzles[day] = DailyPuzzleRecord(
+        seconds: secs,
+        hints: hints,
+        stars: result.stars,
+      );
+      // Keep the save small: drop records older than ~400 days.
+      if (data.dailyPuzzles.length > 400) {
+        final keys = data.dailyPuzzles.keys.toList()..sort();
+        for (final k in keys.take(keys.length - 400)) {
+          data.dailyPuzzles.remove(k);
+        }
+      }
+      coins =
+          (dailyCoins(dailyStreak) * (1 + 0.1 * data.upgradeLevel('center')))
+              .round();
+      xp = Economy.stageXp(score: result.score, cleared: true);
+      data.coins += coins;
+      data.xp += xp;
+      data.stats
+        ..totalScore += result.score
+        ..totalDeliveries += result.deliveries
+        ..totalPlaySeconds += secs
+        ..clearsSinceInterstitial += 1;
+      _trackMissions(result, dailyPuzzle: true);
+    } else {
+      if (secs < existing.seconds) existing.seconds = secs;
+      if (result.stars > existing.stars) existing.stars = result.stars;
+    }
+    final unlockedBefore = Set.of(data.unlocked);
+    _applyAutoUnlocks();
+    await _commit();
+    return (
+      RewardSummary(
+        coins: coins,
+        xp: xp,
+        newBest: existing != null && secs <= existing.seconds,
+        firstClear: existing == null,
+        levelBefore: levelBefore,
+        levelAfter: level,
+        newUnlocks: [
+          for (final id in data.unlocked.difference(unlockedBefore))
+            ?cosmeticById(id),
+        ],
+      ),
+      dailyStreak,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // Daily missions
 
   DailyState _daily() {
@@ -304,12 +401,13 @@ class ProgressController extends ChangeNotifier {
     ];
   }
 
-  void _trackMissions(StageResult r) {
+  void _trackMissions(StageResult r, {bool dailyPuzzle = false}) {
     final daily = _daily();
     for (final m in Economy.missionsForDay(daily.day)) {
       final cur = daily.progress[m.id] ?? 0;
       final next = switch (m.kind) {
         MissionKind.clears => cur + (r.cleared ? 1 : 0),
+        MissionKind.dailyPuzzle => cur + (dailyPuzzle ? 1 : 0),
         MissionKind.perfectClears => cur + (r.cleared && r.stars == 3 ? 1 : 0),
         MissionKind.totalScore => cur + r.score,
         MissionKind.deliveries => cur + r.deliveries,

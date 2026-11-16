@@ -269,6 +269,76 @@ void main() {
       },
     );
 
+    test('daily puzzle: reward once per day, best time kept', () async {
+      final day = Economy.dayKey(now);
+      final (first, streak) = await pc.recordDaily(
+        day: day,
+        result: result(score: 800, stars: 3, deliveries: 7),
+        hints: 0,
+      );
+      expect(first.firstClear, isTrue);
+      expect(first.coins, ProgressController.dailyCoins(1));
+      expect(streak, 1);
+      final coins = pc.data.coins;
+      final (again, _) = await pc.recordDaily(
+        day: day,
+        result: result(score: 800, stars: 3, deliveries: 7),
+        hints: 0,
+      );
+      expect(again.coins, 0);
+      expect(pc.data.coins, coins);
+      expect(pc.todaysPuzzleSolved, isTrue);
+    });
+
+    test(
+      'daily streak counts consecutive days and survives an open today',
+      () async {
+        Future<void> solve() => pc.recordDaily(
+          day: Economy.dayKey(now),
+          result: result(),
+          hints: 0,
+        );
+        await solve();
+        now = now.add(const Duration(days: 1));
+        await solve();
+        now = now.add(const Duration(days: 1));
+        await solve();
+        expect(pc.dailyStreak, 3);
+        expect(pc.recentDaily(7), [
+          false,
+          false,
+          false,
+          false,
+          true,
+          true,
+          true,
+        ]);
+        // Next day, not solved yet: streak still shown as 3.
+        now = now.add(const Duration(days: 1));
+        expect(pc.dailyStreak, 3);
+        expect(pc.todaysPuzzleSolved, isFalse);
+        // Skipping a day breaks it.
+        now = now.add(const Duration(days: 1));
+        expect(pc.dailyStreak, 0);
+        await solve();
+        expect(pc.dailyStreak, 1);
+      },
+    );
+
+    test('streak bonus grows and caps', () {
+      expect(ProgressController.dailyCoins(1), 50);
+      expect(ProgressController.dailyCoins(3), 70);
+      expect(ProgressController.dailyCoins(30), 120);
+    });
+
+    test('daily records persist and old saves load without them', () async {
+      await pc.recordDaily(day: 20261116, result: result(), hints: 1);
+      final reloaded = await ProgressController.load(SaveRepository(store));
+      expect(reloaded.dailyRecord(20261116)!.hints, 1);
+      final old = SaveData.fromJson({'schemaVersion': 3, 'coins': 1});
+      expect(old.dailyPuzzles, isEmpty);
+    });
+
     test('app open tracks days since install', () async {
       expect(await pc.onAppOpen(), 0);
       now = now.add(const Duration(days: 1));

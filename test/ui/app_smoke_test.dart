@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sort_factory/app/app.dart';
 import 'package:sort_factory/app/services.dart';
@@ -9,6 +10,7 @@ import 'package:sort_factory/data/progress_controller.dart';
 import 'package:sort_factory/data/save_repository.dart';
 import 'package:sort_factory/game/logic/game_session.dart';
 import 'package:sort_factory/game/logic/models.dart';
+import 'package:sort_factory/game/logic/daily.dart';
 import 'package:sort_factory/game/logic/stage_repository.dart';
 import 'package:sort_factory/services/ads/ad_manager.dart';
 import 'package:sort_factory/services/ads/ad_service.dart';
@@ -23,6 +25,9 @@ Future<AppServices> makeServices() async {
     progress: progress,
     stages: StageCatalog.fromJsonString(
       File('assets/stages/stages.json').readAsStringSync(),
+    ),
+    daily: DailyCatalog.fromJsonString(
+      File('assets/stages/daily.json').readAsStringSync(),
     ),
     ads: AdManager(
       service: NoAdService(),
@@ -184,5 +189,52 @@ void main() {
     expect(find.textContaining('ここには置けません'), findsNothing);
     // Guidance comes back after the refusal message.
     expect(find.textContaining('光っているマス'), findsOneWidget);
+  });
+
+  testWidgets('daily puzzle: open from title, solve, share, streak shown', (
+    tester,
+  ) async {
+    await setPhone(tester, const Size(390, 844));
+    final svc = await tester.runAsync(makeServices);
+    await tester.pumpWidget(SortFactoryApp(services: svc!));
+    await tester.pumpAndSettle();
+    expect(find.text('今日のパズル'), findsOneWidget);
+    await tester.tap(find.text('挑戦'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    final game =
+        (tester.widget(
+              find.byWidgetPredicate((w) => w is GameWidget),
+            ) as GameWidget).game!
+            as dynamic;
+    final session = game.session as GameSession;
+    expect(session.config.id, DailyCatalog.dayKey(DateTime.now()));
+    for (final box in session.config.solution) {
+      await tapCell(tester, game, box);
+    }
+    for (var i = 0; i < 120; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(find.text('今日のパズル クリア！'), findsOneWidget);
+    expect(find.text('1日連続'), findsOneWidget);
+    expect(svc.progress.todaysPuzzleSolved, isTrue);
+    // Daily play never touches the stage list.
+    expect(svc.progress.isUnlocked(2), isFalse);
+
+    String? copied;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied = (call.arguments as Map)['text'] as String;
+        }
+        return null;
+      },
+    );
+    await tester.ensureVisible(find.text('結果をコピーして共有'));
+    await tester.tap(find.text('結果をコピーして共有'));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(copied, contains('SORT FACTORY 今日のパズル'));
+    expect(copied, contains('ノーヒント'));
   });
 }
