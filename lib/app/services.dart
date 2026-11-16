@@ -7,6 +7,7 @@ import '../services/ads/ad_manager.dart';
 import '../services/analytics/analytics.dart';
 import '../services/audio/audio_service.dart';
 import '../services/iap/purchase_service.dart';
+import '../services/notifications/reminder_manager.dart';
 
 /// Dependency container shared across screens.
 class AppServices {
@@ -18,6 +19,7 @@ class AppServices {
     required this.purchases,
     required this.analytics,
     required this.audio,
+    required this.reminders,
   });
 
   final ProgressController progress;
@@ -27,6 +29,7 @@ class AppServices {
   final PurchaseService purchases;
   final Analytics analytics;
   final AudioService audio;
+  final ReminderManager reminders;
 }
 
 class ServicesScope extends InheritedWidget {
