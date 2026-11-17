@@ -7,6 +7,7 @@ import '../game/logic/daily.dart';
 import '../ui/palette.dart';
 import '../ui/strings.dart';
 import '../ui/widgets.dart';
+import 'calendar_screen.dart';
 import 'factory_screen.dart';
 import 'game_screen.dart';
 import 'settings_screen.dart';
@@ -368,7 +369,16 @@ class _DailyCard extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
+              IconButton(
+                tooltip: 'パズルカレンダー',
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const CalendarScreen()),
+                ),
+                icon: const Icon(
+                  Icons.calendar_month_rounded,
+                  color: AppColors.primary,
+                ),
+              ),
               if (solved)
                 Column(
                   children: [

@@ -83,20 +83,35 @@ class Settings {
 
 /// Result of one day's daily puzzle.
 class DailyPuzzleRecord {
-  DailyPuzzleRecord({this.seconds = 0, this.hints = 0, this.stars = 0});
+  DailyPuzzleRecord({
+    this.seconds = 0,
+    this.hints = 0,
+    this.stars = 0,
+    this.late = false,
+  });
 
   /// Best (lowest) solve time.
   int seconds;
   int hints;
   int stars;
 
-  Map<String, dynamic> toJson() => {'s': seconds, 'h': hints, 'st': stars};
+  /// Solved later from the calendar, not on the day itself. Late solves do
+  /// not count toward the streak.
+  bool late;
+
+  Map<String, dynamic> toJson() => {
+    's': seconds,
+    'h': hints,
+    'st': stars,
+    if (late) 'l': true,
+  };
 
   factory DailyPuzzleRecord.fromJson(Map<String, dynamic> j) =>
       DailyPuzzleRecord(
         seconds: _int(j['s']),
         hints: _int(j['h']),
         stars: _int(j['st']).clamp(0, 3),
+        late: j['l'] == true,
       );
 }
 
@@ -195,8 +210,10 @@ class SaveData {
     this.daily,
     PlayStats? stats,
     Map<int, DailyPuzzleRecord>? dailyPuzzles,
+    Set<int>? unlockedPastDailies,
   }) : stages = stages ?? {},
        dailyPuzzles = dailyPuzzles ?? {},
+       unlockedPastDailies = unlockedPastDailies ?? {},
        upgrades = upgrades ?? {},
        unlocked = unlocked ?? {'skin_default', 'box_default'},
        settings = settings ?? Settings(),
@@ -227,6 +244,9 @@ class SaveData {
   /// Solved daily puzzles by local day (yyyymmdd). Additive field: older
   /// saves simply start empty, so no migration is needed.
   final Map<int, DailyPuzzleRecord> dailyPuzzles;
+
+  /// Past daily puzzles opened from the calendar (ad or coins).
+  final Set<int> unlockedPastDailies;
 
   StageRecord record(int stageId) =>
       stages.putIfAbsent(stageId, StageRecord.new);
@@ -261,6 +281,7 @@ class SaveData {
     'daily': daily?.toJson(),
     'stats': stats.toJson(),
     'dailyPuzzles': dailyPuzzles.map((k, v) => MapEntry('$k', v.toJson())),
+    'unlockedPastDailies': unlockedPastDailies.toList()..sort(),
   };
 
   String encode() => jsonEncode(toJson());
@@ -310,6 +331,10 @@ class SaveData {
           ? PlayStats.fromJson((j['stats'] as Map).cast<String, dynamic>())
           : null,
       dailyPuzzles: dailyPuzzles,
+      unlockedPastDailies: {
+        for (final d in (j['unlockedPastDailies'] as List?) ?? const [])
+          if (d is num) d.toInt(),
+      },
     );
   }
 }
